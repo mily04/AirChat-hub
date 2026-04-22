@@ -1,0 +1,371 @@
+/*
+ * Copyright (C) 2026 mily04
+ * This file is part of AirChat.
+ *
+ * Licensed under the GNU Affero General Public License, version 3 or later.
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Commercial licensing is available from: mily040625@gmail.com
+ */
+
+@import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+:root {
+  /* Default: Clean Minimalism */
+  --page-bg: #f5f5f7;
+  --text-main: #1d1d1f;
+  --text-muted: rgba(0, 0, 0, 0.5);
+  --text-subtle: rgba(0, 0, 0, 0.4);
+  
+  --panel-bg: rgba(255, 255, 255, 0.7);
+  --panel-border: rgba(255, 255, 255, 0.6);
+  --panel-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  
+  --sidebar-bg: rgba(255, 255, 255, 0.4);
+  --sidebar-border: rgba(210, 210, 215, 0.5);
+  
+  --item-bg: transparent;
+  --item-hover: rgba(0, 0, 0, 0.03);
+  --item-active: rgba(0, 0, 0, 0.06);
+  --item-active-shadow: none;
+  
+  --chat-bg: rgba(255, 255, 255, 0.6);
+  --header-bg: rgba(255, 255, 255, 0.4);
+  
+  --input-container: rgba(255, 255, 255, 0.8);
+  --input-border: rgba(0, 0, 0, 0.08);
+  
+  --bubble-sent: #0a84ff;
+  --bubble-sent-text: #ffffff;
+  --bubble-sent-shadow: 0 2px 8px rgba(10, 132, 255, 0.2);
+  --bubble-recv: #ffffff;
+  --bubble-recv-text: rgba(0, 0, 0, 0.9);
+  --bubble-recv-border: rgba(0, 0, 0, 0.05);
+  --bubble-recv-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+  
+  --primary-btn: #1d1d1f;
+  --primary-btn-text: #ffffff;
+  --primary-btn-hover: #000000;
+  
+  --send-btn: #0a84ff;
+  --send-btn-hover: #007aff;
+  --send-btn-disabled: rgba(0, 0, 0, 0.05);
+  --send-btn-text: #ffffff;
+  --send-btn-disabled-text: rgba(0, 0, 0, 0.2);
+
+  --sys-msg-bg: rgba(0, 0, 0, 0.05);
+  --sys-msg-text: rgba(0, 0, 0, 0.4);
+  --sys-msg-border: transparent;
+  
+  --avatar-ring: #0a84ff;
+  --avatar-bg: #ffffff;
+  --avatar-border: transparent;
+  --global-avatar-bg: #ffffff;
+
+  --decor-display: block;
+
+  --radius-panel: 2.5rem;
+  --radius-bubble-sent: 24px 24px 8px 24px;
+  --radius-bubble-recv: 24px 24px 24px 8px;
+  --radius-squircle: 50%;
+  --blur-panel: blur(24px);
+  --blur-header: blur(12px);
+}
+
+body[data-theme="dark"] {
+  --page-bg: #000000;
+  --text-main: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.6);
+  --text-subtle: rgba(255, 255, 255, 0.4);
+  
+  --panel-bg: #151515;
+  --panel-border: rgba(255, 255, 255, 0.1);
+  --panel-shadow: 0 10px 40px rgba(0, 0, 0, 1);
+  
+  --sidebar-bg: #0a0a0a;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  
+  --item-bg: transparent;
+  --item-hover: rgba(255, 255, 255, 0.05);
+  --item-active: rgba(255, 255, 255, 0.1);
+  --item-active-shadow: none;
+  
+  --chat-bg: #151515;
+  --header-bg: rgba(21, 21, 21, 0.8);
+  
+  --input-container: #222222;
+  --input-border: rgba(255, 255, 255, 0.1);
+  
+  --bubble-sent: #0a84ff;
+  --bubble-sent-text: #ffffff;
+  --bubble-sent-shadow: none;
+  --bubble-recv: #2a2a2a;
+  --bubble-recv-text: #ffffff;
+  --bubble-recv-border: rgba(255, 255, 255, 0.05);
+  --bubble-recv-shadow: none;
+  
+  --primary-btn: #ffffff;
+  --primary-btn-text: #000000;
+  --primary-btn-hover: #e5e5e5;
+  
+  --send-btn: #0a84ff;
+  --send-btn-hover: #007aff;
+  --send-btn-disabled: rgba(255, 255, 255, 0.05);
+  --send-btn-text: #ffffff;
+  --send-btn-disabled-text: rgba(255, 255, 255, 0.2);
+
+  --sys-msg-bg: rgba(255, 255, 255, 0.05);
+  --sys-msg-text: rgba(255, 255, 255, 0.5);
+  --sys-msg-border: rgba(255, 255, 255, 0.05);
+  
+  --avatar-ring: #0a84ff;
+  --avatar-bg: #222222;
+  --avatar-border: rgba(255,255,255,0.1);
+  --global-avatar-bg: #222222;
+
+  --decor-display: none;
+
+  --radius-panel: 2.5rem;
+  --radius-bubble-sent: 24px 24px 8px 24px;
+  --radius-bubble-recv: 24px 24px 24px 8px;
+  --radius-squircle: 50%;
+  --blur-panel: none;
+  --blur-header: blur(12px);
+}
+
+body[data-theme="glass"] {
+  --page-bg: var(--glass-bg-val, radial-gradient(circle at top left, #6366f1 0%, #a855f7 40%, #ec4899 100%));
+  --text-main: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.8);
+  --text-subtle: rgba(255, 255, 255, 0.6);
+  
+  --panel-bg: rgba(255, 255, 255, 0.15);
+  --panel-border: rgba(255, 255, 255, 0.2);
+  --panel-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+  
+  --sidebar-bg: transparent;
+  --sidebar-border: rgba(255, 255, 255, 0.2);
+  
+  --item-bg: transparent;
+  --item-hover: rgba(255, 255, 255, 0.1);
+  --item-active: rgba(255, 255, 255, 0.3);
+  --item-active-shadow: inset 0 0 10px rgba(255, 255, 255, 0.2);
+  
+  --chat-bg: rgba(255, 255, 255, 0.1);
+  --header-bg: transparent;
+  
+  --input-container: rgba(255, 255, 255, 0.2);
+  --input-border: rgba(255, 255, 255, 0.3);
+  
+  --bubble-sent: #2563eb;
+  --bubble-sent-text: #ffffff;
+  --bubble-sent-shadow: none;
+  --bubble-recv: rgba(255, 255, 255, 0.8);
+  --bubble-recv-text: #1f2937;
+  --bubble-recv-border: transparent;
+  --bubble-recv-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  
+  --primary-btn: #2563eb;
+  --primary-btn-text: #ffffff;
+  --primary-btn-hover: #1d4ed8;
+  
+  --send-btn: #2563eb;
+  --send-btn-hover: #1d4ed8;
+  --send-btn-disabled: rgba(255, 255, 255, 0.1);
+  --send-btn-text: #ffffff;
+  --send-btn-disabled-text: rgba(255, 255, 255, 0.4);
+
+  --sys-msg-bg: rgba(255, 255, 255, 0.1);
+  --sys-msg-text: rgba(255, 255, 255, 0.8);
+  --sys-msg-border: rgba(255, 255, 255, 0.1);
+  
+  --avatar-ring: #ffffff;
+  --avatar-bg: rgba(255,255,255,0.2);
+  --avatar-border: rgba(255,255,255,0.5);
+  --global-avatar-bg: transparent;
+
+  --decor-display: none;
+
+  --radius-panel: 32px;
+  --radius-bubble-sent: 18px 18px 4px 18px;
+  --radius-bubble-recv: 18px 18px 18px 4px;
+  --radius-squircle: 28%;
+  --blur-panel: blur(24px);
+  --blur-header: blur(8px);
+}
+
+body[data-theme="glass"][data-glass-contrast="light"] {
+  --text-main: #1d1d1f;
+  --text-muted: rgba(0, 0, 0, 0.7);
+  --text-subtle: rgba(0, 0, 0, 0.5);
+  --panel-bg: rgba(255, 255, 255, 0.4);
+  --panel-border: rgba(0, 0, 0, 0.1);
+  --panel-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+  --sidebar-bg: transparent;
+  --sidebar-border: rgba(0, 0, 0, 0.1);
+  --item-hover: rgba(0, 0, 0, 0.04);
+  --item-active: rgba(0, 0, 0, 0.08);
+  --item-active-shadow: none;
+  --chat-bg: rgba(255, 255, 255, 0.3);
+  --input-container: rgba(255, 255, 255, 0.6);
+  --input-border: rgba(0, 0, 0, 0.1);
+  --sys-msg-bg: rgba(0, 0, 0, 0.05);
+  --sys-msg-text: rgba(0, 0, 0, 0.6);
+  --sys-msg-border: transparent;
+  --bubble-recv: rgba(255, 255, 255, 0.6);
+  --bubble-recv-text: #1d1d1f;
+  --avatar-ring: #2563eb;
+  --avatar-bg: rgba(255,255,255,0.6);
+  --avatar-border: rgba(0,0,0,0.1);
+  --send-btn-disabled: rgba(0, 0, 0, 0.05);
+  --send-btn-disabled-text: rgba(0, 0, 0, 0.3);
+  --bubble-recv-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+}
+
+body {
+  font-family: var(--font-sans);
+  margin: 0;
+  padding: 0;
+  background: var(--page-bg);
+  min-height: 100vh;
+  color: var(--text-main);
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* Theme Component Classes */
+.theme-panel {
+  background: var(--panel-bg);
+  backdrop-filter: var(--blur-panel);
+  -webkit-backdrop-filter: var(--blur-panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--panel-shadow);
+  border-radius: var(--radius-panel);
+  transition: all 0.3s ease;
+}
+
+.theme-sidebar {
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-border);
+  transition: all 0.3s ease;
+}
+.theme-border-t { border-top: 1px solid var(--sidebar-border); }
+
+.theme-item {
+  background: var(--item-bg);
+  transition: all 0.2s ease;
+}
+.theme-item:hover { background: var(--item-hover); }
+.theme-item-active { background: var(--item-active); box-shadow: var(--item-active-shadow); }
+
+.theme-chat-bg {
+  background: var(--chat-bg);
+  transition: all 0.3s ease;
+}
+
+.theme-header {
+  background: var(--header-bg);
+  backdrop-filter: var(--blur-header);
+  -webkit-backdrop-filter: var(--blur-header);
+  border-bottom: 1px solid var(--sidebar-border);
+  transition: all 0.3s ease;
+}
+
+.theme-input-wrap {
+  background: var(--input-container);
+  border: 1px solid var(--input-border);
+  transition: background 0.3s ease, border 0.3s ease;
+}
+
+.theme-bubble-sent {
+  background: var(--bubble-sent);
+  color: var(--bubble-sent-text);
+  border-radius: var(--radius-bubble-sent);
+  box-shadow: var(--bubble-sent-shadow);
+  transition: all 0.3s ease;
+}
+
+.theme-bubble-recv {
+  background: var(--bubble-recv);
+  color: var(--bubble-recv-text);
+  border: 1px solid var(--bubble-recv-border);
+  border-radius: var(--radius-bubble-recv);
+  box-shadow: var(--bubble-recv-shadow);
+  transition: all 0.3s ease;
+}
+
+.theme-primary-btn {
+  background: var(--primary-btn);
+  color: var(--primary-btn-text);
+  transition: all 0.2s ease;
+}
+.theme-primary-btn:hover:not(:disabled) {
+  background: var(--primary-btn-hover);
+}
+
+.theme-send-btn {
+  background: var(--send-btn);
+  color: var(--send-btn-text);
+  transition: all 0.2s ease;
+}
+.theme-send-btn:hover:not(:disabled) {
+  background: var(--send-btn-hover);
+}
+.theme-send-btn:disabled {
+  background: var(--send-btn-disabled);
+  color: var(--send-btn-disabled-text);
+  cursor: not-allowed;
+}
+.theme-send-icon-disabled {
+  color: var(--send-btn-disabled-text);
+}
+
+.theme-sys-msg {
+  background: var(--sys-msg-bg);
+  color: var(--sys-msg-text);
+  border: 1px solid var(--sys-msg-border);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.squircle {
+  border-radius: var(--radius-squircle);
+  transition: border-radius 0.3s ease;
+}
+
+.theme-decor {
+  display: var(--decor-display);
+}
+
+.theme-text-main { color: var(--text-main); }
+.theme-text-muted { color: var(--text-muted); }
+.theme-text-subtle { color: var(--text-subtle); }
+
+.theme-avatar {
+  background: var(--avatar-bg);
+  border: 2px solid var(--avatar-border);
+}
+.theme-global-avatar {
+  background: var(--global-avatar-bg);
+}
+.theme-avatar-ring {
+  --tw-ring-color: var(--avatar-ring);
+}
+.theme-input {
+  background: var(--sys-msg-bg);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+}
+.theme-input::placeholder {
+  color: var(--text-subtle);
+}
+
+.custom-scrollbar::-webkit-scrollbar { width: 5px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--text-subtle); border-radius: 10px; }
+
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
