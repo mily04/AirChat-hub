@@ -1,0 +1,100 @@
+
+# AirChat
+
+AirChat is a local-network chat and file sharing app for nearby devices. It runs a small web server on one machine and lets other devices on the same LAN join through a browser.
+
+## Features
+
+- Public LAN chat room
+- Direct user-to-user messages
+- Temporary group chats
+- File, image, and video transfer
+- Drag-and-drop file upload in the chat window
+- Message forwarding, including separate and merged forwarding
+- Download buttons for transferred files
+- Local network URL discovery with mDNS support
+- Windows executable packaging script
+
+## Technology Stack
+
+- TypeScript
+- React
+- Vite
+- Express
+- Socket.IO
+- Multer
+- Tailwind CSS
+
+## Requirements
+
+- Node.js 18 or newer
+- npm
+- Devices must be on the same local network
+- The host firewall must allow Node.js or the packaged AirChat executable on private networks
+
+## Quick Start
+
+```bash
+npm install
+npm run dev
+```
+
+Open the local URL printed by the server. Other devices on the same LAN can join through the LAN IP URL or the mDNS URL shown by AirChat.
+
+If another device cannot open the LAN URL, allow Node.js through the operating system firewall for private networks and make sure both devices are connected to the same router or subnet.
+
+## Configuration
+
+Copy `.env.example` to `.env` if you need to expose a public URL in the share dialog:
+
+```bash
+APP_URL="https://example.com"
+```
+
+`APP_URL` is optional. AirChat works on a LAN without it.
+
+## Scripts
+
+```bash
+npm run dev          # start the development server
+npm run lint         # run TypeScript checks
+npm run build        # build the web app and server bundle
+npm run package:win  # build a Windows executable
+```
+
+## Repository Layout
+
+```text
+src/                 React client
+server.ts            Express and Socket.IO server
+uploads/             Runtime upload directory, ignored by Git
+dist/                Build output, ignored by Git
+LICENSE              AGPL-3.0 license text
+LICENSE-COMMERCIAL.md
+THIRD_PARTY_LICENSES.md
+```
+
+## Security and Privacy Notes
+
+AirChat is designed for trusted local networks. It does not provide end-to-end encryption, user accounts, or long-term server-side access control. Do not expose it directly to the public internet without adding authentication, transport security, and operational hardening.
+
+Uploaded files are stored on the host machine in the runtime upload directory. Do not commit uploads, logs, local databases, certificates, private keys, or environment files.
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes.
+
+## License
+
+AirChat is open source under the GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later).
+
+You may use, modify, and distribute this project under the terms of the AGPL. If you distribute a modified version, or provide a modified version to users over a network as a hosted/SaaS service, you must provide the corresponding source code to those users as required by the AGPL.
+
+If you want to use AirChat in a closed-source product, closed-source internal system, closed-source SDK, or closed-source SaaS/hosted service without complying with the corresponding AGPL obligations, contact the author for a separate commercial license.
+
+Commercial licensing contact:
+
+- Email: mily040625@gmail.com
+- Website: https://yourwebsite.com
+
+Third-party dependencies are reviewed separately in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
