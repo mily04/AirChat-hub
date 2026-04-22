@@ -16,6 +16,8 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
+import nacl from 'tweetnacl';
+import { sha256 } from 'js-sha256';
 import { Bonjour } from 'bonjour-service';
 
 const runtimeDir = typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'dist');
@@ -319,9 +321,10 @@ app.get('/api/health', (req, res) => {
 
 // Real-time Chat
 type PublicIdentity = {
+  algorithm: 'nacl-box-ed25519-v1';
   keyId: string;
-  signingPublicKeyJwk: Record<string, unknown>;
-  encryptionPublicKeyJwk: Record<string, unknown>;
+  signingPublicKey: string;
+  encryptionPublicKey: string;
 };
 
 type ConnectedUser = {
@@ -347,8 +350,8 @@ function stableStringify(value: unknown): string {
   return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`).join(',')}}`;
 }
 
-function keyIdForSigningPublicKey(jwk: Record<string, unknown>) {
-  return crypto.createHash('sha256').update(stableStringify(jwk)).digest('hex').slice(0, 24);
+function keyIdForSigningPublicKey(signingPublicKey: string) {
+  return sha256(signingPublicKey).slice(0, 24);
 }
 
 function joinSigningText(userData: {
@@ -360,14 +363,15 @@ function joinSigningText(userData: {
   identitySignedAt: number;
 }) {
   return [
-    'airchat-join-v1',
+    'airchat-join-v2',
     userData.id,
     userData.username,
     userData.avatar || '',
     userData.color,
+    userData.publicIdentity.algorithm,
     userData.publicIdentity.keyId,
-    stableStringify(userData.publicIdentity.signingPublicKeyJwk),
-    stableStringify(userData.publicIdentity.encryptionPublicKeyJwk),
+    userData.publicIdentity.signingPublicKey,
+    userData.publicIdentity.encryptionPublicKey,
     String(userData.identitySignedAt),
   ].join('|');
 }
@@ -382,20 +386,13 @@ async function verifyJoinIdentity(userData: {
   identitySignedAt?: number;
 }) {
   if (!userData.publicIdentity || !userData.identitySignature || !userData.identitySignedAt) return false;
-  if (userData.publicIdentity.keyId !== keyIdForSigningPublicKey(userData.publicIdentity.signingPublicKeyJwk)) return false;
+  if (userData.publicIdentity.algorithm !== 'nacl-box-ed25519-v1') return false;
+  if (userData.publicIdentity.keyId !== keyIdForSigningPublicKey(userData.publicIdentity.signingPublicKey)) return false;
 
-  const publicKey = await crypto.webcrypto.subtle.importKey(
-    'jwk',
-    userData.publicIdentity.signingPublicKeyJwk,
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    true,
-    ['verify'],
-  );
-  return crypto.webcrypto.subtle.verify(
-    { name: 'ECDSA', hash: 'SHA-256' },
-    publicKey,
-    Buffer.from(userData.identitySignature, 'base64'),
+  return nacl.sign.detached.verify(
     new TextEncoder().encode(joinSigningText({ ...userData, publicIdentity: userData.publicIdentity, identitySignedAt: userData.identitySignedAt })),
+    Buffer.from(userData.identitySignature, 'base64'),
+    Buffer.from(userData.publicIdentity.signingPublicKey, 'base64'),
   );
 }
 

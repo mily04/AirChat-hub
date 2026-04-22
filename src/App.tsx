@@ -10,6 +10,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { sha256 } from 'js-sha256';
 import { Send, Paperclip, FileText, Image as ImageIcon, Video, User as UserIcon, LogOut, Sun, Moon, Palette, Plus, Users, Check, X, Copy, Trash2, ChevronLeft, Globe, MoreVertical, Share2, Forward, Download, CheckSquare, Square } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -592,13 +593,11 @@ export default function App() {
 
   const sha256Hex = async (blob: Blob) => {
     const buffer = await blob.arrayBuffer();
-    const digest = await crypto.subtle.digest('SHA-256', buffer);
-    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+    return sha256(buffer);
   };
 
   const sha256Text = async (text: string) => {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+    return sha256(text);
   };
 
   const getUploadIdForFile = async (file: File) => {

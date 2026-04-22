@@ -8,29 +8,33 @@
  * Commercial licensing is available from: mily040625@gmail.com
  */
 
+import nacl from 'tweetnacl';
+import { sha256 } from 'js-sha256';
 import { E2EEPayload, E2EEPublicIdentity, Profile, User } from './types';
 
 const DB_NAME = 'airchat-e2ee';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'identities';
 const TEXT_ENCODING = 'utf-8';
+const IDENTITY_ALGORITHM = 'nacl-box-ed25519-v1';
 
 interface StoredIdentity {
   profileId: string;
+  algorithm: typeof IDENTITY_ALGORITHM;
   keyId: string;
-  signingPrivateKeyJwk: JsonWebKey;
-  signingPublicKeyJwk: JsonWebKey;
-  encryptionPrivateKeyJwk: JsonWebKey;
-  encryptionPublicKeyJwk: JsonWebKey;
+  signingPublicKey: string;
+  signingSecretKey: string;
+  encryptionPublicKey: string;
+  encryptionSecretKey: string;
 }
 
 export interface LocalE2EEIdentity {
   profileId: string;
   keyId: string;
-  signingPrivateKey: CryptoKey;
-  signingPublicKey: CryptoKey;
-  encryptionPrivateKey: CryptoKey;
-  encryptionPublicKey: CryptoKey;
+  signingPublicKey: Uint8Array;
+  signingSecretKey: Uint8Array;
+  encryptionPublicKey: Uint8Array;
+  encryptionSecretKey: Uint8Array;
   publicIdentity: E2EEPublicIdentity;
 }
 
@@ -38,12 +42,6 @@ export interface JoinIdentityProof {
   publicIdentity: E2EEPublicIdentity;
   identitySignature: string;
   identitySignedAt: number;
-}
-
-function assertWebCrypto() {
-  if (!crypto?.subtle) {
-    throw new Error('Web Crypto API is required for private chat encryption.');
-  }
 }
 
 function requestToPromise<T>(request: IDBRequest<T>) {
@@ -93,11 +91,6 @@ function stableStringify(value: unknown): string {
   return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`).join(',')}}`;
 }
 
-async function sha256Hex(text: string) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
 function bytesToBase64(bytes: Uint8Array) {
   let binary = '';
   bytes.forEach(byte => {
@@ -115,83 +108,58 @@ function base64ToBytes(value: string) {
   return bytes;
 }
 
-async function importSigningPrivateKey(jwk: JsonWebKey) {
-  return crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
-}
-
-async function importSigningPublicKey(jwk: JsonWebKey) {
-  return crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
-}
-
-async function importEncryptionPrivateKey(jwk: JsonWebKey) {
-  return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
-}
-
-async function importEncryptionPublicKey(jwk: JsonWebKey) {
-  return crypto.subtle.importKey('jwk', jwk, { name: 'ECDH', namedCurve: 'P-256' }, true, []);
+function keyIdForSigningPublicKey(signingPublicKey: string) {
+  return sha256(signingPublicKey).slice(0, 24);
 }
 
 function publicIdentityFromRecord(record: StoredIdentity): E2EEPublicIdentity {
   return {
+    algorithm: record.algorithm,
     keyId: record.keyId,
-    signingPublicKeyJwk: record.signingPublicKeyJwk,
-    encryptionPublicKeyJwk: record.encryptionPublicKeyJwk,
+    signingPublicKey: record.signingPublicKey,
+    encryptionPublicKey: record.encryptionPublicKey,
   };
 }
 
-async function recordToIdentity(record: StoredIdentity): Promise<LocalE2EEIdentity> {
-  const [signingPrivateKey, signingPublicKey, encryptionPrivateKey, encryptionPublicKey] = await Promise.all([
-    importSigningPrivateKey(record.signingPrivateKeyJwk),
-    importSigningPublicKey(record.signingPublicKeyJwk),
-    importEncryptionPrivateKey(record.encryptionPrivateKeyJwk),
-    importEncryptionPublicKey(record.encryptionPublicKeyJwk),
-  ]);
-
+function recordToIdentity(record: StoredIdentity): LocalE2EEIdentity {
   return {
     profileId: record.profileId,
     keyId: record.keyId,
-    signingPrivateKey,
-    signingPublicKey,
-    encryptionPrivateKey,
-    encryptionPublicKey,
+    signingPublicKey: base64ToBytes(record.signingPublicKey),
+    signingSecretKey: base64ToBytes(record.signingSecretKey),
+    encryptionPublicKey: base64ToBytes(record.encryptionPublicKey),
+    encryptionSecretKey: base64ToBytes(record.encryptionSecretKey),
     publicIdentity: publicIdentityFromRecord(record),
   };
 }
 
-async function generateStoredIdentity(profileId: string): Promise<StoredIdentity> {
-  const [signingPair, encryptionPair] = await Promise.all([
-    crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']),
-    crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']),
-  ]);
-
-  const [signingPrivateKeyJwk, signingPublicKeyJwk, encryptionPrivateKeyJwk, encryptionPublicKeyJwk] = await Promise.all([
-    crypto.subtle.exportKey('jwk', signingPair.privateKey),
-    crypto.subtle.exportKey('jwk', signingPair.publicKey),
-    crypto.subtle.exportKey('jwk', encryptionPair.privateKey),
-    crypto.subtle.exportKey('jwk', encryptionPair.publicKey),
-  ]);
-  const keyId = (await sha256Hex(stableStringify(signingPublicKeyJwk))).slice(0, 24);
+function generateStoredIdentity(profileId: string): StoredIdentity {
+  const signingPair = nacl.sign.keyPair();
+  const encryptionPair = nacl.box.keyPair();
+  const signingPublicKey = bytesToBase64(signingPair.publicKey);
 
   return {
     profileId,
-    keyId,
-    signingPrivateKeyJwk,
-    signingPublicKeyJwk,
-    encryptionPrivateKeyJwk,
-    encryptionPublicKeyJwk,
+    algorithm: IDENTITY_ALGORITHM,
+    keyId: keyIdForSigningPublicKey(signingPublicKey),
+    signingPublicKey,
+    signingSecretKey: bytesToBase64(signingPair.secretKey),
+    encryptionPublicKey: bytesToBase64(encryptionPair.publicKey),
+    encryptionSecretKey: bytesToBase64(encryptionPair.secretKey),
   };
 }
 
 function joinSigningText(profile: Profile, publicIdentity: E2EEPublicIdentity, signedAt: number) {
   return [
-    'airchat-join-v1',
+    'airchat-join-v2',
     profile.id,
     profile.username,
     profile.avatar || '',
     profile.color,
+    publicIdentity.algorithm,
     publicIdentity.keyId,
-    stableStringify(publicIdentity.signingPublicKeyJwk),
-    stableStringify(publicIdentity.encryptionPublicKeyJwk),
+    publicIdentity.signingPublicKey,
+    publicIdentity.encryptionPublicKey,
     String(signedAt),
   ].join('|');
 }
@@ -216,33 +184,33 @@ function encryptedMessageSigningText(params: {
   ].join('|');
 }
 
-async function signText(privateKey: CryptoKey, text: string) {
-  const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, new TextEncoder().encode(text));
-  return bytesToBase64(new Uint8Array(signature));
+function signText(secretKey: Uint8Array, text: string) {
+  const signature = nacl.sign.detached(new TextEncoder().encode(text), secretKey);
+  return bytesToBase64(signature);
 }
 
-async function verifyText(publicKeyJwk: JsonWebKey, signature: string, text: string) {
-  const publicKey = await importSigningPublicKey(publicKeyJwk);
-  return crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, publicKey, base64ToBytes(signature), new TextEncoder().encode(text));
+function verifyText(publicKey: string, signature: string, text: string) {
+  return nacl.sign.detached.verify(new TextEncoder().encode(text), base64ToBytes(signature), base64ToBytes(publicKey));
 }
 
-async function deriveAesKey(privateKey: CryptoKey, peerPublicKeyJwk: JsonWebKey) {
-  const peerPublicKey = await importEncryptionPublicKey(peerPublicKeyJwk);
-  return crypto.subtle.deriveKey(
-    { name: 'ECDH', public: peerPublicKey },
-    privateKey,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt'],
+function isStoredIdentity(value: unknown): value is StoredIdentity {
+  const record = value as Partial<StoredIdentity> | null;
+  return Boolean(
+    record &&
+    record.algorithm === IDENTITY_ALGORITHM &&
+    record.keyId &&
+    record.signingPublicKey &&
+    record.signingSecretKey &&
+    record.encryptionPublicKey &&
+    record.encryptionSecretKey,
   );
 }
 
 export async function ensureE2EEIdentity(profile: Profile): Promise<LocalE2EEIdentity> {
-  assertWebCrypto();
-  const existing = await withIdentityStore<StoredIdentity | undefined>('readonly', (store) => requestToPromise(store.get(profile.id)));
-  if (existing) return recordToIdentity(existing);
+  const existing = await withIdentityStore<unknown>('readonly', (store) => requestToPromise(store.get(profile.id)));
+  if (isStoredIdentity(existing)) return recordToIdentity(existing);
 
-  const created = await generateStoredIdentity(profile.id);
+  const created = generateStoredIdentity(profile.id);
   await withIdentityStore('readwrite', (store) => {
     store.put(created);
   });
@@ -251,7 +219,7 @@ export async function ensureE2EEIdentity(profile: Profile): Promise<LocalE2EEIde
 
 export async function buildJoinIdentityProof(profile: Profile, identity: LocalE2EEIdentity): Promise<JoinIdentityProof> {
   const identitySignedAt = Date.now();
-  const identitySignature = await signText(identity.signingPrivateKey, joinSigningText(profile, identity.publicIdentity, identitySignedAt));
+  const identitySignature = signText(identity.signingSecretKey, joinSigningText(profile, identity.publicIdentity, identitySignedAt));
   return {
     publicIdentity: identity.publicIdentity,
     identitySignature,
@@ -266,31 +234,30 @@ export async function encryptPrivateText(params: {
   identity: LocalE2EEIdentity;
 }) {
   const { plaintext, sender, receiver, identity } = params;
-  if (!receiver.publicIdentity) throw new Error('Receiver has no published encryption key.');
+  if (!receiver.publicIdentity?.encryptionPublicKey) throw new Error('Receiver has no published encryption key.');
 
-  const messageId = `${Date.now().toString(36)}${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
+  const messageId = `${Date.now().toString(36)}${bytesToBase64(nacl.randomBytes(8)).replace(/[^a-zA-Z0-9]/g, '')}`;
   const timestamp = Date.now();
-  const ivBytes = crypto.getRandomValues(new Uint8Array(12));
-  const aesKey = await deriveAesKey(identity.encryptionPrivateKey, receiver.publicIdentity.encryptionPublicKeyJwk);
-  const aad = new TextEncoder().encode(`${messageId}|${sender.id}|${receiver.id}|${timestamp}|${identity.keyId}|${receiver.publicIdentity.keyId}`);
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: ivBytes, additionalData: aad },
-    aesKey,
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+  const ciphertext = nacl.box(
     new TextEncoder().encode(plaintext),
+    nonce,
+    base64ToBytes(receiver.publicIdentity.encryptionPublicKey),
+    identity.encryptionSecretKey,
   );
 
   const payload: E2EEPayload = {
     version: 'airchat-e2ee-v1',
-    algorithm: 'ECDH-P256+AES-GCM',
-    ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
-    iv: bytesToBase64(ivBytes),
+    algorithm: 'NACL-BOX-CURVE25519+XSALSA20-POLY1305',
+    ciphertext: bytesToBase64(ciphertext),
+    iv: bytesToBase64(nonce),
     senderKeyId: identity.keyId,
     receiverKeyId: receiver.publicIdentity.keyId,
     messageId,
     timestamp,
     signature: '',
   };
-  payload.signature = await signText(identity.signingPrivateKey, encryptedMessageSigningText({ payload, senderId: sender.id, receiverId: receiver.id }));
+  payload.signature = signText(identity.signingSecretKey, encryptedMessageSigningText({ payload, senderId: sender.id, receiverId: receiver.id }));
 
   return payload;
 }
@@ -308,7 +275,9 @@ export async function decryptPrivateText(params: {
   const { message, currentProfileId, peer, identity } = params;
   const payload = message.encryption;
   if (!payload) throw new Error('Missing encrypted payload.');
-  if (!peer.publicIdentity) throw new Error('Peer has no published encryption key.');
+  if (!peer.publicIdentity?.encryptionPublicKey || !peer.publicIdentity.signingPublicKey) {
+    throw new Error('Peer has no published encryption key.');
+  }
   if (peer.publicIdentity.keyId !== payload.senderKeyId && peer.publicIdentity.keyId !== payload.receiverKeyId) {
     throw new Error('Peer identity does not match the encrypted message key ids.');
   }
@@ -320,20 +289,24 @@ export async function decryptPrivateText(params: {
   }
 
   const signerIdentity = currentProfileId === message.senderId ? identity.publicIdentity : peer.publicIdentity;
-  const signatureOk = await verifyText(
-    signerIdentity.signingPublicKeyJwk,
+  const signatureOk = verifyText(
+    signerIdentity.signingPublicKey,
     payload.signature,
     encryptedMessageSigningText({ payload, senderId: message.senderId, receiverId: message.receiverId }),
   );
   if (!signatureOk) throw new Error('Encrypted message signature is invalid.');
 
-  const aesKey = await deriveAesKey(identity.encryptionPrivateKey, peer.publicIdentity.encryptionPublicKeyJwk);
-  const aad = new TextEncoder().encode(`${payload.messageId}|${message.senderId}|${message.receiverId}|${payload.timestamp}|${payload.senderKeyId}|${payload.receiverKeyId}`);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: base64ToBytes(payload.iv), additionalData: aad },
-    aesKey,
+  const plaintext = nacl.box.open(
     base64ToBytes(payload.ciphertext),
+    base64ToBytes(payload.iv),
+    base64ToBytes(peer.publicIdentity.encryptionPublicKey),
+    identity.encryptionSecretKey,
   );
+  if (!plaintext) throw new Error('Encrypted private message could not be opened.');
 
   return new TextDecoder(TEXT_ENCODING).decode(plaintext);
 }
+
+export const e2eeInternals = {
+  stableStringify,
+};

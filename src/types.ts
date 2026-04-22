@@ -29,14 +29,15 @@ export interface User {
 }
 
 export interface E2EEPublicIdentity {
+  algorithm: 'nacl-box-ed25519-v1';
   keyId: string;
-  signingPublicKeyJwk: JsonWebKey;
-  encryptionPublicKeyJwk: JsonWebKey;
+  signingPublicKey: string;
+  encryptionPublicKey: string;
 }
 
 export interface E2EEPayload {
   version: 'airchat-e2ee-v1';
-  algorithm: 'ECDH-P256+AES-GCM';
+  algorithm: 'NACL-BOX-CURVE25519+XSALSA20-POLY1305';
   ciphertext: string;
   iv: string;
   senderKeyId: string;
