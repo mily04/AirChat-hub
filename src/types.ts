@@ -22,6 +22,28 @@ export interface User {
   avatar: string | null;
   color: string;
   isOnline?: boolean;
+  publicIdentity?: E2EEPublicIdentity;
+  identitySignature?: string;
+  identitySignedAt?: number;
+  identityVerified?: boolean;
+}
+
+export interface E2EEPublicIdentity {
+  keyId: string;
+  signingPublicKeyJwk: JsonWebKey;
+  encryptionPublicKeyJwk: JsonWebKey;
+}
+
+export interface E2EEPayload {
+  version: 'airchat-e2ee-v1';
+  algorithm: 'ECDH-P256+AES-GCM';
+  ciphertext: string;
+  iv: string;
+  senderKeyId: string;
+  receiverKeyId: string;
+  messageId: string;
+  timestamp: number;
+  signature: string;
 }
 
 export interface Attachment {
@@ -29,6 +51,21 @@ export interface Attachment {
   originalName: string;
   size: number;
   mimeType: string;
+  uploadId?: string;
+  fileId?: string;
+  chunkSize?: number;
+  totalChunks?: number;
+  encrypted?: boolean;
+  encryption?: {
+    algorithm: string;
+    keyId?: string;
+    iv?: string;
+  };
+  integrity?: {
+    algorithm: string;
+    chunkHashes?: string[];
+    fileHash?: string;
+  };
 }
 
 export interface ChatMessage {
@@ -38,6 +75,9 @@ export interface ChatMessage {
   type: 'text' | 'file' | 'system';
   content: string; // text or JSON string of Attachment for file
   timestamp: number;
+  isEncrypted?: boolean;
+  encryption?: E2EEPayload;
+  encryptionStatus?: 'encrypted' | 'decrypted' | 'missing-key' | 'decrypt-failed' | 'identity-invalid';
 }
 
 export interface Group {

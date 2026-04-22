@@ -15,6 +15,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import crypto from 'crypto';
 import { Bonjour } from 'bonjour-service';
 
 const runtimeDir = typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'dist');
@@ -34,10 +35,21 @@ const io = new Server(httpServer, {
 
 const PORT = 3000;
 
+const DEFAULT_CHUNK_SIZE = Number(process.env.UPLOAD_CHUNK_SIZE || 2 * 1024 * 1024);
+const MAX_CHUNK_SIZE = Number(process.env.UPLOAD_MAX_CHUNK_SIZE || 8 * 1024 * 1024);
+const MAX_FILE_SIZE = Number(process.env.UPLOAD_MAX_FILE_SIZE || 5 * 1024 * 1024 * 1024);
+
+app.use(express.json({ limit: '1mb' }));
+
 // Setup file uploads setup
 const uploadsDir = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
+}
+
+const chunkUploadsDir = path.join(uploadsDir, '.chunks');
+if (!fs.existsSync(chunkUploadsDir)) {
+  fs.mkdirSync(chunkUploadsDir, { recursive: true });
 }
 
 function decodeOriginalFilename(filename: string) {
@@ -55,33 +67,72 @@ function sanitizeFilename(filename: string) {
   return cleaned || 'file';
 }
 
-function getUploadOriginalName(req: any, file: Express.Multer.File) {
-  const queryName = typeof req.query?.originalNameEncoded === 'string' ? req.query.originalNameEncoded : '';
-  const bodyEncodedName = typeof req.body?.originalNameEncoded === 'string' ? req.body.originalNameEncoded : '';
-  const encodedName = queryName || bodyEncodedName;
+function decodeEncodedFilename(encodedName: string, fallback = 'file') {
   if (encodedName) {
     try {
       return sanitizeFilename(decodeURIComponent(encodedName));
     } catch {
-      // Fall back to the browser-provided names below.
+      return sanitizeFilename(fallback);
     }
   }
-
-  const bodyName = typeof req.body?.originalName === 'string' ? req.body.originalName : '';
-  return sanitizeFilename(bodyName || decodeOriginalFilename(file.originalname));
+  return sanitizeFilename(fallback);
 }
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    const originalName = getUploadOriginalName(req, file);
-    cb(null, uniqueSuffix + '-' + originalName);
+function isSafeUploadId(uploadId: string) {
+  return /^[a-zA-Z0-9_-]{12,128}$/.test(uploadId);
+}
+
+function parseNonNegativeInteger(value: unknown) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function getUploadTempDir(uploadId: string) {
+  return path.join(chunkUploadsDir, uploadId);
+}
+
+function getChunkPath(uploadId: string, chunkIndex: number) {
+  return path.join(getUploadTempDir(uploadId), `${chunkIndex}.part`);
+}
+
+async function listUploadedChunks(uploadId: string) {
+  const uploadDir = getUploadTempDir(uploadId);
+  if (!fs.existsSync(uploadDir)) return [];
+  const files = await fs.promises.readdir(uploadDir);
+  return files
+    .map(file => /^(\d+)\.part$/.exec(file)?.[1])
+    .filter((value): value is string => Boolean(value))
+    .map(Number)
+    .sort((a, b) => a - b);
+}
+
+function streamFile(source: string, destination: fs.WriteStream) {
+  return new Promise<void>((resolve, reject) => {
+    const input = fs.createReadStream(source);
+    input.on('error', reject);
+    destination.on('error', reject);
+    input.on('end', resolve);
+    input.pipe(destination, { end: false });
+  });
+}
+
+async function hashFile(filePath: string) {
+  return new Promise<string>((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const input = fs.createReadStream(filePath);
+    input.on('data', chunk => hash.update(chunk));
+    input.on('error', reject);
+    input.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+const chunkUpload = multer({
+  dest: chunkUploadsDir,
+  limits: {
+    fileSize: MAX_CHUNK_SIZE,
+    files: 1,
   },
 });
-const upload = multer({ storage });
 
 // Serve uploads
 app.use('/uploads', express.static(uploadsDir));
@@ -147,17 +198,119 @@ app.get('/api/server-info', (req, res) => {
   });
 });
 
-app.post('/api/upload', upload.single('file'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
-  const fileUrl = `/uploads/${encodeURIComponent(req.file.filename)}`;
+app.get('/api/upload/config', (req, res) => {
   res.json({
-    url: fileUrl,
-    originalName: getUploadOriginalName(req, req.file),
-    size: req.file.size,
-    mimeType: req.file.mimetype
+    chunkSize: DEFAULT_CHUNK_SIZE,
+    maxChunkSize: MAX_CHUNK_SIZE,
+    maxFileSize: MAX_FILE_SIZE,
   });
+});
+
+app.get('/api/upload/status', async (req, res) => {
+  const uploadId = String(req.query.uploadId || '');
+  if (!isSafeUploadId(uploadId)) {
+    return res.status(400).json({ error: 'Invalid uploadId' });
+  }
+
+  const uploadedChunks = await listUploadedChunks(uploadId);
+  res.json({ uploadId, uploadedChunks });
+});
+
+app.post('/api/upload/chunk', chunkUpload.single('chunk'), async (req, res) => {
+  const uploadId = String(req.body.uploadId || '');
+  const chunkIndex = parseNonNegativeInteger(req.body.chunkIndex);
+  const totalChunks = parseNonNegativeInteger(req.body.totalChunks);
+  const totalSize = parseNonNegativeInteger(req.body.totalSize);
+  const declaredChunkSize = parseNonNegativeInteger(req.body.chunkSize);
+  const chunkHash = typeof req.body.chunkHash === 'string' ? req.body.chunkHash : '';
+
+  if (!req.file) return res.status(400).json({ error: 'Missing chunk file' });
+  if (!isSafeUploadId(uploadId) || chunkIndex === null || totalChunks === null || totalSize === null || declaredChunkSize === null) {
+    await fs.promises.rm(req.file.path, { force: true });
+    return res.status(400).json({ error: 'Invalid upload metadata' });
+  }
+  if (totalChunks <= 0 || chunkIndex >= totalChunks || totalSize > MAX_FILE_SIZE || declaredChunkSize > MAX_CHUNK_SIZE || req.file.size > MAX_CHUNK_SIZE) {
+    await fs.promises.rm(req.file.path, { force: true });
+    return res.status(413).json({ error: 'Upload exceeds configured limits' });
+  }
+  if (chunkHash) {
+    const actualChunkHash = await hashFile(req.file.path);
+    if (actualChunkHash !== chunkHash) {
+      await fs.promises.rm(req.file.path, { force: true });
+      return res.status(400).json({ error: 'Chunk hash mismatch' });
+    }
+  }
+
+  const uploadDir = getUploadTempDir(uploadId);
+  await fs.promises.mkdir(uploadDir, { recursive: true });
+  await fs.promises.rename(req.file.path, getChunkPath(uploadId, chunkIndex));
+
+  const uploadedChunks = await listUploadedChunks(uploadId);
+  res.json({ uploadId, uploadedChunks, received: chunkIndex });
+});
+
+app.post('/api/upload/complete', async (req, res) => {
+  const uploadId = String(req.body.uploadId || '');
+  const fileId = String(req.body.fileId || uploadId);
+  const totalChunks = parseNonNegativeInteger(req.body.totalChunks);
+  const totalSize = parseNonNegativeInteger(req.body.totalSize);
+  const originalName = decodeEncodedFilename(String(req.body.originalNameEncoded || ''), String(req.body.originalName || 'file'));
+  const mimeType = typeof req.body.mimeType === 'string' ? req.body.mimeType : 'application/octet-stream';
+  const expectedFileHash = typeof req.body.fileHash === 'string' ? req.body.fileHash : '';
+
+  if (!isSafeUploadId(uploadId) || totalChunks === null || totalSize === null || totalChunks <= 0 || totalSize > MAX_FILE_SIZE) {
+    return res.status(400).json({ error: 'Invalid upload completion metadata' });
+  }
+
+  const uploadedChunks = await listUploadedChunks(uploadId);
+  if (uploadedChunks.length !== totalChunks || uploadedChunks.some((chunk, index) => chunk !== index)) {
+    return res.status(409).json({ error: 'Upload is incomplete', uploadedChunks });
+  }
+
+  const finalName = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}-${originalName}`;
+  const finalPath = path.join(uploadsDir, finalName);
+  const output = fs.createWriteStream(finalPath, { flags: 'wx' });
+
+  try {
+    for (let i = 0; i < totalChunks; i += 1) {
+      await streamFile(getChunkPath(uploadId, i), output);
+    }
+    await new Promise<void>((resolve, reject) => {
+      output.end(resolve);
+      output.on('error', reject);
+    });
+
+    const stat = await fs.promises.stat(finalPath);
+    if (stat.size !== totalSize) {
+      await fs.promises.rm(finalPath, { force: true });
+      return res.status(400).json({ error: 'Merged file size mismatch' });
+    }
+
+    let fileHash = '';
+    if (expectedFileHash) {
+      fileHash = await hashFile(finalPath);
+      if (fileHash !== expectedFileHash) {
+        await fs.promises.rm(finalPath, { force: true });
+        return res.status(400).json({ error: 'File hash mismatch' });
+      }
+    }
+
+    await fs.promises.rm(getUploadTempDir(uploadId), { recursive: true, force: true });
+    res.json({
+      uploadId,
+      fileId,
+      url: `/uploads/${encodeURIComponent(finalName)}`,
+      originalName,
+      size: stat.size,
+      mimeType,
+      fileHash,
+    });
+  } catch (error) {
+    output.destroy();
+    await fs.promises.rm(finalPath, { force: true });
+    console.error('Failed to complete upload', error);
+    res.status(500).json({ error: 'Failed to complete upload' });
+  }
 });
 
 app.get('/api/health', (req, res) => {
@@ -165,9 +318,103 @@ app.get('/api/health', (req, res) => {
 });
 
 // Real-time Chat
-const users = new Map<string, { id: string; username: string; avatar: string | null; color: string; socketId: string }>();
+type PublicIdentity = {
+  keyId: string;
+  signingPublicKeyJwk: Record<string, unknown>;
+  encryptionPublicKeyJwk: Record<string, unknown>;
+};
+
+type ConnectedUser = {
+  id: string;
+  username: string;
+  avatar: string | null;
+  color: string;
+  socketId: string;
+  publicIdentity?: PublicIdentity;
+  identitySignature?: string;
+  identitySignedAt?: number;
+  identityVerified?: boolean;
+};
+
+const users = new Map<string, ConnectedUser>();
 const activeSockets = new Map<string, string>(); // socketId -> userId
+const identityKeyIds = new Map<string, string>(); // userId -> keyId
 const groups = new Map<string, { id: string; name: string; members: Set<string> }>();
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`).join(',')}}`;
+}
+
+function keyIdForSigningPublicKey(jwk: Record<string, unknown>) {
+  return crypto.createHash('sha256').update(stableStringify(jwk)).digest('hex').slice(0, 24);
+}
+
+function joinSigningText(userData: {
+  id: string;
+  username: string;
+  avatar: string | null;
+  color: string;
+  publicIdentity: PublicIdentity;
+  identitySignedAt: number;
+}) {
+  return [
+    'airchat-join-v1',
+    userData.id,
+    userData.username,
+    userData.avatar || '',
+    userData.color,
+    userData.publicIdentity.keyId,
+    stableStringify(userData.publicIdentity.signingPublicKeyJwk),
+    stableStringify(userData.publicIdentity.encryptionPublicKeyJwk),
+    String(userData.identitySignedAt),
+  ].join('|');
+}
+
+async function verifyJoinIdentity(userData: {
+  id: string;
+  username: string;
+  avatar: string | null;
+  color: string;
+  publicIdentity?: PublicIdentity;
+  identitySignature?: string;
+  identitySignedAt?: number;
+}) {
+  if (!userData.publicIdentity || !userData.identitySignature || !userData.identitySignedAt) return false;
+  if (userData.publicIdentity.keyId !== keyIdForSigningPublicKey(userData.publicIdentity.signingPublicKeyJwk)) return false;
+
+  const publicKey = await crypto.webcrypto.subtle.importKey(
+    'jwk',
+    userData.publicIdentity.signingPublicKeyJwk,
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['verify'],
+  );
+  return crypto.webcrypto.subtle.verify(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    publicKey,
+    Buffer.from(userData.identitySignature, 'base64'),
+    new TextEncoder().encode(joinSigningText({ ...userData, publicIdentity: userData.publicIdentity, identitySignedAt: userData.identitySignedAt })),
+  );
+}
+
+function publicUser(user: ConnectedUser) {
+  return {
+    id: user.id,
+    username: user.username,
+    avatar: user.avatar,
+    color: user.color,
+    publicIdentity: user.publicIdentity,
+    identitySignature: user.identitySignature,
+    identitySignedAt: user.identitySignedAt,
+    identityVerified: user.identityVerified,
+  };
+}
+
+function broadcastUsers() {
+  io.emit('users', Array.from(users.values()).map(publicUser));
+}
 
 function getGroupsForUser(userId: string) {
   return Array.from(groups.values())
@@ -183,12 +430,42 @@ function sendGroupsToUser(userId: string) {
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
 
-  socket.on('join', (userData: { id: string; username: string; avatar: string | null; color: string }) => {
+  socket.on('join', async (userData: {
+    id: string;
+    username: string;
+    avatar: string | null;
+    color: string;
+    isAnonymous?: boolean;
+    publicIdentity?: PublicIdentity;
+    identitySignature?: string;
+    identitySignedAt?: number;
+  }) => {
     const userId = userData.id;
+    const identityVerified = userData.isAnonymous ? false : await verifyJoinIdentity(userData).catch(() => false);
+    if (!userData.isAnonymous && !identityVerified) {
+      socket.emit('identityError', { code: 'invalid-identity', message: 'Identity signature verification failed.' });
+      socket.disconnect(true);
+      return;
+    }
+
+    const existingKeyId = identityKeyIds.get(userId);
+    const nextKeyId = userData.publicIdentity?.keyId;
+    if (!userData.isAnonymous && existingKeyId && nextKeyId && existingKeyId !== nextKeyId) {
+      socket.emit('identityError', { code: 'identity-changed', message: 'This user id is already bound to a different key.' });
+      socket.disconnect(true);
+      return;
+    }
+
+    const existingUser = users.get(userId);
+    if (existingUser && existingUser.socketId !== socket.id) {
+      activeSockets.delete(existingUser.socketId);
+    }
+
     activeSockets.set(socket.id, userId);
-    users.set(userId, { ...userData, socketId: socket.id });
+    if (nextKeyId) identityKeyIds.set(userId, nextKeyId);
+    users.set(userId, { ...userData, socketId: socket.id, identityVerified });
     
-    io.emit('users', Array.from(users.values()).map(u => ({ id: u.id, username: u.username, avatar: u.avatar, color: u.color })));
+    broadcastUsers();
     socket.emit('groups', getGroupsForUser(userId));
     
     // Announce user joining global
@@ -267,16 +544,31 @@ io.on('connection', (socket) => {
   });
 
   socket.on('sendMessage', (msg: any) => {
+    const senderId = activeSockets.get(socket.id);
+    if (!senderId) return;
+    const receiverId = String(msg.receiverId || '');
+    if (!receiverId) return;
+    const isPrivateText = msg.type === 'text' && receiverId !== 'global' && !receiverId.startsWith('group_');
+    if (isPrivateText) {
+      if (!msg.isEncrypted || !msg.encryption?.ciphertext || !msg.encryption?.iv || !msg.encryption?.messageId) {
+        socket.emit('messageError', { code: 'private-text-requires-e2ee', message: 'Private text messages must be end-to-end encrypted.' });
+        return;
+      }
+    }
+
     const message = {
       ...msg,
+      senderId,
+      receiverId,
+      content: msg.isEncrypted ? '[encrypted]' : msg.content,
       id: Date.now().toString() + Math.random().toString(36).substring(7),
       timestamp: Date.now()
     };
     
-    if (msg.receiverId === 'global') {
+    if (receiverId === 'global') {
       io.emit('message', message);
-    } else if (msg.receiverId.startsWith('group_')) {
-      const group = groups.get(msg.receiverId);
+    } else if (receiverId.startsWith('group_')) {
+      const group = groups.get(receiverId);
       if (group) {
         group.members.forEach(memberId => {
           const u = users.get(memberId);
@@ -284,11 +576,10 @@ io.on('connection', (socket) => {
         });
       }
     } else {
-      const receiver = users.get(msg.receiverId);
+      const receiver = users.get(receiverId);
       if (receiver) io.to(receiver.socketId).emit('message', message);
       
-      const senderId = activeSockets.get(socket.id);
-      if (senderId && senderId !== msg.receiverId) {
+      if (senderId !== receiverId) {
         socket.emit('message', message);
       }
     }
@@ -303,7 +594,7 @@ io.on('connection', (socket) => {
       users.delete(userId);
       activeSockets.delete(socket.id);
       
-      io.emit('users', Array.from(users.values()).map(u => ({ id: u.id, username: u.username, avatar: u.avatar, color: u.color })));
+      broadcastUsers();
       
       if (user) {
         io.emit('message', {

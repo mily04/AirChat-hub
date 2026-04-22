@@ -14,6 +14,8 @@ import { Send, Paperclip, FileText, Image as ImageIcon, Video, User as UserIcon,
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Profile, User, ChatMessage, Attachment, Group, GroupInvite } from './types';
+import { airChatRepository, MESSAGE_PAGE_SIZE } from './db';
+import { buildJoinIdentityProof, decryptPrivateText, encryptPrivateText, ensureE2EEIdentity, type LocalE2EEIdentity } from './e2ee';
 
 // Utility for Tailwind
 function cn(...inputs: ClassValue[]) {
@@ -25,6 +27,19 @@ const generateId = () => Date.now().toString(36) + Math.random().toString(36).su
 
 // Global socket instance
 const socket: Socket = io('/', { autoConnect: false });
+const MAX_RENDERED_MESSAGES_PER_ROOM = MESSAGE_PAGE_SIZE * 3;
+const DEFAULT_UPLOAD_CHUNK_SIZE = 2 * 1024 * 1024;
+const UPLOAD_CONCURRENCY = 2;
+const MAX_CHUNK_RETRIES = 3;
+
+type UploadState = {
+  fileName: string;
+  progress: number;
+  uploadedBytes: number;
+  totalBytes: number;
+  speedBytesPerSecond: number;
+  status: 'uploading' | 'retrying' | 'finalizing' | 'failed';
+};
 
 function formatBytes(bytes: number, decimals = 2) {
   if (!+bytes) return '0 Bytes';
@@ -189,6 +204,8 @@ export default function App() {
   
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [e2eeIdentity, setE2eeIdentity] = useState<LocalE2EEIdentity | null>(null);
+  const [securityNotice, setSecurityNotice] = useState<string | null>(null);
 
   const [isConnected, setIsConnected] = useState(false);
   const [activeChat, setActiveChat] = useState<string>('global'); 
@@ -204,9 +221,12 @@ export default function App() {
   const [invites, setInvites] = useState<GroupInvite[]>([]);
   
   const [chats, setChats] = useState<Record<string, ChatMessage[]>>({});
+  const [roomHasMore, setRoomHasMore] = useState<Record<string, boolean>>({});
+  const [loadingHistory, setLoadingHistory] = useState(false);
   
   const [inputValue, setInputValue] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadState, setUploadState] = useState<UploadState | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [showShare, setShowShare] = useState(false);
@@ -216,9 +236,10 @@ export default function App() {
   const [forwardDraft, setForwardDraft] = useState<{ messages: ChatMessage[]; mode: 'single' | 'separate' | 'merged' } | null>(null);
   const [serverInfo, setServerInfo] = useState<{ localIp: string, port: number, mdnsUrl: string, appUrl?: string } | null>(null);
 
-  const [theme, setTheme] = useState(() => localStorage.getItem('lan-chat-theme') || 'glass');
+  const [theme, setTheme] = useState(() => localStorage.getItem('lan-chat-theme') || 'minimal');
   
   const hasShownAnonRef = useRef(false);
+  const loadingProfileRef = useRef<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -230,58 +251,83 @@ export default function App() {
       .catch(err => console.error('Failed to get server info', err));
   }, []);
 
+  const loadRoomMessages = async (profileId: string, roomId: string, mode: 'recent' | 'older' = 'recent') => {
+    if (mode === 'older') setLoadingHistory(true);
+    try {
+      const existing = chats[roomId] || [];
+      const page = mode === 'older' && existing.length > 0
+        ? await airChatRepository.getMessagesBefore(profileId, roomId, existing[0].timestamp, MESSAGE_PAGE_SIZE)
+        : await airChatRepository.getRecentMessages(profileId, roomId, MESSAGE_PAGE_SIZE);
+
+      setChats(prev => {
+        const current = mode === 'older' ? (prev[roomId] || []) : [];
+        const byId = new Map<string, ChatMessage>();
+        [...page.messages, ...current].forEach(msg => byId.set(msg.id, msg));
+        return {
+          ...prev,
+          [roomId]: Array.from(byId.values()).sort((a, b) => a.timestamp - b.timestamp),
+        };
+      });
+      setRoomHasMore(prev => ({ ...prev, [roomId]: page.hasMore }));
+    } catch (error) {
+      console.error('Failed to load message history', error);
+    } finally {
+      if (mode === 'older') setLoadingHistory(false);
+    }
+  };
+
   // Load profiles on mount
   useEffect(() => {
-    const saved = localStorage.getItem('lan_profiles');
-    if (saved) {
-      try { setProfiles(JSON.parse(saved)); } catch (e) {}
-    }
+    let cancelled = false;
+    airChatRepository.getProfiles()
+      .then(savedProfiles => {
+        if (!cancelled) setProfiles(savedProfiles);
+      })
+      .catch(error => console.error('Failed to load profiles', error));
+    return () => { cancelled = true; };
   }, []);
 
   // Update logic: When profile changes, load its specific data
   useEffect(() => {
+    let cancelled = false;
+    hasShownAnonRef.current = false;
+
     if (profile && !profile.isAnonymous) {
-      const savedUsers = localStorage.getItem(`lan_users_${profile.id}`);
-      if (savedUsers) { try { setKnownUsers(JSON.parse(savedUsers)); } catch(e){} }
-      else setKnownUsers({});
-
-      const savedDeletedUsers = localStorage.getItem(`lan_deleted_users_${profile.id}`);
-      if (savedDeletedUsers) { try { setDeletedUsers(JSON.parse(savedDeletedUsers)); } catch(e){} }
-      else setDeletedUsers({});
-      localStorage.removeItem(`lan_hidden_users_${profile.id}`);
-
-      const savedGroups = localStorage.getItem(`lan_groups_${profile.id}`);
-      if (savedGroups) { try { setKnownGroups(JSON.parse(savedGroups)); } catch(e){} }
-      else setKnownGroups({});
-
-      const savedDeletedGroups = localStorage.getItem(`lan_deleted_groups_${profile.id}`);
-      if (savedDeletedGroups) { try { setDeletedGroups(JSON.parse(savedDeletedGroups)); } catch(e){} }
-      else setDeletedGroups({});
-      localStorage.removeItem(`lan_hidden_groups_${profile.id}`);
-
-      const savedChats = localStorage.getItem(`lan_chats_${profile.id}`);
-      if (savedChats) { try { setChats(JSON.parse(savedChats)); } catch(e){} }
-      else setChats({});
-    } else {
+      loadingProfileRef.current = profile.id;
       setKnownUsers({});
       setDeletedUsers({});
       setKnownGroups({});
       setDeletedGroups({});
       setChats({});
-    }
-    hasShownAnonRef.current = false;
-  }, [profile]);
+      setRoomHasMore({});
 
-  // Persist histories whenever chats change
+      airChatRepository.getContacts(profile.id)
+        .then(({ users, deletedUsers, groups, deletedGroups }) => {
+          if (cancelled || loadingProfileRef.current !== profile.id) return;
+          setKnownUsers(users);
+          setDeletedUsers(deletedUsers);
+          setKnownGroups(groups);
+          setDeletedGroups(deletedGroups);
+          void loadRoomMessages(profile.id, activeChat, 'recent');
+        })
+        .catch(error => console.error('Failed to load local profile data', error));
+    } else {
+      loadingProfileRef.current = null;
+      setKnownUsers({});
+      setDeletedUsers({});
+      setKnownGroups({});
+      setDeletedGroups({});
+      setChats({});
+      setRoomHasMore({});
+    }
+    return () => { cancelled = true; };
+  }, [profile?.id]);
+
   useEffect(() => {
     if (profile && !profile.isAnonymous) {
-      localStorage.setItem(`lan_users_${profile.id}`, JSON.stringify(knownUsers));
-      localStorage.setItem(`lan_deleted_users_${profile.id}`, JSON.stringify(deletedUsers));
-      localStorage.setItem(`lan_groups_${profile.id}`, JSON.stringify(knownGroups));
-      localStorage.setItem(`lan_deleted_groups_${profile.id}`, JSON.stringify(deletedGroups));
-      localStorage.setItem(`lan_chats_${profile.id}`, JSON.stringify(chats));
+      void loadRoomMessages(profile.id, activeChat, 'recent');
     }
-  }, [knownUsers, deletedUsers, knownGroups, deletedGroups, chats, profile]);
+  }, [activeChat, profile?.id]);
 
   // Theme effect
   useEffect(() => {
@@ -304,6 +350,32 @@ export default function App() {
      }
   }, [profile, isConnected]);
 
+  const decryptIncomingMessage = async (msg: ChatMessage): Promise<ChatMessage> => {
+    if (!msg.isEncrypted || !msg.encryption || msg.type !== 'text') return msg;
+    if (!profile || !e2eeIdentity) {
+      return { ...msg, content: '[Encrypted private message: local key is unavailable]', encryptionStatus: 'missing-key' };
+    }
+
+    const peerId = msg.senderId === profile.id ? msg.receiverId : msg.senderId;
+    const peer = allUsersMap.get(peerId) || knownUsers[peerId] || serverUsers.find(user => user.id === peerId);
+    if (!peer?.publicIdentity) {
+      return { ...msg, content: '[Encrypted private message: peer key is unavailable]', encryptionStatus: 'missing-key' };
+    }
+
+    try {
+      const plaintext = await decryptPrivateText({
+        message: msg,
+        currentProfileId: profile.id,
+        peer,
+        identity: e2eeIdentity,
+      });
+      return { ...msg, content: plaintext, encryptionStatus: 'decrypted' };
+    } catch (error) {
+      console.error('Failed to decrypt private message', error);
+      return { ...msg, content: '[Encrypted private message: decryption failed]', encryptionStatus: 'decrypt-failed' };
+    }
+  };
+
   // Setup Socket Listeners
   useEffect(() => {
     socket.on('connect', () => {
@@ -318,6 +390,7 @@ export default function App() {
           updatedUsers.forEach(u => {
             if (u.id !== profile.id && !deletedUsers[u.id]) next[u.id] = u;
           });
+          void airChatRepository.saveUsers(profile.id, Object.values(next));
           return next;
         });
       }
@@ -331,6 +404,7 @@ export default function App() {
           updatedGroups.forEach(g => {
             if (!deletedGroups[g.id]) next[g.id] = g;
           });
+          void airChatRepository.saveGroups(profile.id, Object.values(next));
           return next;
         });
       }
@@ -342,7 +416,15 @@ export default function App() {
     });
 
     socket.on('message', (msg: ChatMessage) => {
-      addMessageToChat(msg);
+      void decryptIncomingMessage(msg).then(addMessageToChat);
+    });
+
+    socket.on('messageError', (error: { message?: string }) => {
+      setSecurityNotice(error.message || 'Message was rejected by the server.');
+    });
+
+    socket.on('identityError', (error: { message?: string }) => {
+      setSecurityNotice(error.message || 'Identity verification failed.');
     });
 
     socket.on('disconnect', () => {
@@ -356,9 +438,11 @@ export default function App() {
       socket.off('groups');
       socket.off('groupInvite');
       socket.off('message');
+      socket.off('messageError');
+      socket.off('identityError');
       socket.off('disconnect');
     };
-  }, [profile, deletedUsers, deletedGroups]);
+  }, [profile, deletedUsers, deletedGroups, e2eeIdentity, knownUsers, serverUsers]);
 
   // Scroll to bottom
   useEffect(() => {
@@ -372,16 +456,25 @@ export default function App() {
   }, [activeChat, profile?.id]);
 
   const addMessageToChat = (msg: ChatMessage) => {
+      const room = airChatRepository.roomForMessage(msg, profile?.id || '');
+      if (profile && !profile.isAnonymous) {
+        void airChatRepository.addMessage(profile.id, room, msg).catch(error => console.error('Failed to save message', error));
+      }
+      if ((chats[room] || []).length >= MAX_RENDERED_MESSAGES_PER_ROOM) {
+        setRoomHasMore(current => ({ ...current, [room]: true }));
+      }
       setChats(prev => {
-         const room = msg.type === 'system' || msg.receiverId === 'global' ? 'global'
-                    : msg.receiverId.startsWith('group_') ? msg.receiverId
-                    : (msg.senderId === profile?.id ? msg.receiverId : msg.senderId);
          const roomChats = prev[room] || [];
          
          // simple deduplication just in case
          if (roomChats.some(m => m.id === msg.id)) return prev;
 
-         return { ...prev, [room]: [...roomChats, msg] };
+         const nextRoomChats = [...roomChats, msg];
+         if (nextRoomChats.length > MAX_RENDERED_MESSAGES_PER_ROOM) {
+           return { ...prev, [room]: nextRoomChats.slice(-MAX_RENDERED_MESSAGES_PER_ROOM) };
+         }
+
+         return { ...prev, [room]: nextRoomChats };
       });
   };
 
@@ -389,17 +482,36 @@ export default function App() {
     const newProfile: Profile = { id: generateId(), username, avatar, color };
     const newProfiles = [...profiles, newProfile];
     setProfiles(newProfiles);
-    localStorage.setItem('lan_profiles', JSON.stringify(newProfiles));
+    void airChatRepository.saveProfile(newProfile).catch(error => console.error('Failed to save profile', error));
     loginWithProfile(newProfile);
   };
 
-  const loginWithProfile = (p: Profile) => {
+  const loginWithProfile = async (p: Profile) => {
     setProfile(p);
     setAppView('CHAT');
     setMobileView('SIDEBAR');
-    socket.connect();
-    socket.emit('join', { id: p.id, username: p.username, avatar: p.avatar, color: p.color });
-    setIsConnected(true);
+    setSecurityNotice(null);
+    try {
+      const identity = p.isAnonymous ? null : await ensureE2EEIdentity(p);
+      setE2eeIdentity(identity);
+      const proof = identity ? await buildJoinIdentityProof(p, identity) : null;
+      socket.connect();
+      socket.emit('join', {
+        id: p.id,
+        username: p.username,
+        avatar: p.avatar,
+        color: p.color,
+        isAnonymous: p.isAnonymous,
+        ...(proof || {}),
+      });
+      setIsConnected(true);
+    } catch (error) {
+      console.error('Failed to initialize E2EE identity', error);
+      setSecurityNotice('Private chat encryption could not be initialized on this browser.');
+      socket.connect();
+      socket.emit('join', { id: p.id, username: p.username, avatar: p.avatar, color: p.color, isAnonymous: p.isAnonymous });
+      setIsConnected(true);
+    }
   };
 
   const deleteProfile = (e: React.MouseEvent, id: string) => {
@@ -407,14 +519,7 @@ export default function App() {
     if(window.confirm('确认删除此账户及其所有本地聊天记录吗？')) {
       const newProfiles = profiles.filter(p => p.id !== id);
       setProfiles(newProfiles);
-      localStorage.setItem('lan_profiles', JSON.stringify(newProfiles));
-      localStorage.removeItem(`lan_users_${id}`);
-      localStorage.removeItem(`lan_hidden_users_${id}`);
-      localStorage.removeItem(`lan_deleted_users_${id}`);
-      localStorage.removeItem(`lan_groups_${id}`);
-      localStorage.removeItem(`lan_hidden_groups_${id}`);
-      localStorage.removeItem(`lan_deleted_groups_${id}`);
-      localStorage.removeItem(`lan_chats_${id}`);
+      void airChatRepository.deleteProfile(id).catch(error => console.error('Failed to delete profile data', error));
     }
   };
 
@@ -422,6 +527,7 @@ export default function App() {
     socket.disconnect();
     setIsConnected(false);
     setProfile(null);
+    setE2eeIdentity(null);
     setServerUsers([]);
     setServerGroups([]);
     setInvites([]);
@@ -429,35 +535,212 @@ export default function App() {
     setAppView('START');
   };
 
-  const sendMessage = (e?: React.FormEvent) => {
+  const sendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!inputValue.trim() || !isConnected || !profile) return;
+
+    const content = inputValue;
+    const isPrivateChat = activeChat !== 'global' && !activeChat.startsWith('group_');
+    if (isPrivateChat) {
+      const receiver = allUsersMap.get(activeChat) || knownUsers[activeChat] || serverUsers.find(user => user.id === activeChat);
+      if (!e2eeIdentity || !receiver?.publicIdentity) {
+        setSecurityNotice('Private text cannot be sent until both users have published encryption keys.');
+        return;
+      }
+
+      try {
+        const encryption = await encryptPrivateText({
+          plaintext: content,
+          sender: profile,
+          receiver,
+          identity: e2eeIdentity,
+        });
+        socket.emit('sendMessage', {
+          senderId: profile.id,
+          receiverId: activeChat,
+          type: 'text',
+          content: '[encrypted]',
+          isEncrypted: true,
+          encryption,
+        });
+        setInputValue('');
+      } catch (error) {
+        console.error('Failed to encrypt private message', error);
+        setSecurityNotice('Private text encryption failed. Message was not sent.');
+      }
+      return;
+    }
 
     socket.emit('sendMessage', {
       senderId: profile.id,
       receiverId: activeChat,
       type: 'text',
-      content: inputValue,
+      content,
     });
     setInputValue('');
   };
 
+  const fetchUploadConfig = async () => {
+    try {
+      const response = await fetch('/api/upload/config');
+      if (!response.ok) throw new Error(`Upload config failed: ${response.status}`);
+      return await response.json() as { chunkSize: number; maxChunkSize: number; maxFileSize: number };
+    } catch {
+      return { chunkSize: DEFAULT_UPLOAD_CHUNK_SIZE, maxChunkSize: DEFAULT_UPLOAD_CHUNK_SIZE, maxFileSize: Number.MAX_SAFE_INTEGER };
+    }
+  };
+
+  const sha256Hex = async (blob: Blob) => {
+    const buffer = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buffer);
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  };
+
+  const sha256Text = async (text: string) => {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  };
+
+  const getUploadIdForFile = async (file: File) => {
+    const fingerprint = `${file.name}:${file.size}:${file.lastModified}:${file.type || 'application/octet-stream'}`;
+    return sha256Text(fingerprint);
+  };
+
+  const uploadChunkWithRetry = async (params: {
+    file: File;
+    uploadId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    chunkSize: number;
+    uploadedChunks: Set<number>;
+    onChunkComplete: (chunkIndex: number, bytes: number) => void;
+  }) => {
+    const { file, uploadId, chunkIndex, totalChunks, chunkSize, uploadedChunks, onChunkComplete } = params;
+    if (uploadedChunks.has(chunkIndex)) return;
+
+    const start = chunkIndex * chunkSize;
+    const end = Math.min(file.size, start + chunkSize);
+    const chunk = file.slice(start, end);
+    const chunkHash = await sha256Hex(chunk);
+
+    for (let attempt = 1; attempt <= MAX_CHUNK_RETRIES; attempt += 1) {
+      if (attempt > 1) {
+        setUploadState(current => current ? { ...current, status: 'retrying' } : current);
+        await new Promise(resolve => setTimeout(resolve, attempt * 500));
+      }
+
+      const formData = new FormData();
+      formData.append('uploadId', uploadId);
+      formData.append('fileId', uploadId);
+      formData.append('chunkIndex', String(chunkIndex));
+      formData.append('totalChunks', String(totalChunks));
+      formData.append('totalSize', String(file.size));
+      formData.append('chunkSize', String(chunkSize));
+      formData.append('originalNameEncoded', encodeURIComponent(file.name));
+      formData.append('mimeType', file.type || 'application/octet-stream');
+      formData.append('chunkHash', chunkHash);
+      formData.append('encrypted', 'false');
+      formData.append('chunk', chunk, `${chunkIndex}.part`);
+
+      const response = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+      if (response.ok) {
+        onChunkComplete(chunkIndex, chunk.size);
+        return;
+      }
+
+      if (attempt === MAX_CHUNK_RETRIES) {
+        const message = await response.text().catch(() => '');
+        throw new Error(`Chunk ${chunkIndex} failed: ${response.status} ${message}`);
+      }
+    }
+  };
+
   const uploadFile = async (file: File) => {
     if (!isConnected || !profile) return;
-    const formData = new FormData();
-    formData.append('originalName', file.name);
-    formData.append('originalNameEncoded', encodeURIComponent(file.name));
-    formData.append('file', file);
+    const config = await fetchUploadConfig();
+    if (file.size > config.maxFileSize) {
+      throw new Error(`File exceeds maximum upload size: ${formatBytes(config.maxFileSize)}`);
+    }
 
-    const response = await fetch(`/api/upload?originalNameEncoded=${encodeURIComponent(file.name)}`, { method: 'POST', body: formData });
-    if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+    const chunkSize = Math.min(config.chunkSize || DEFAULT_UPLOAD_CHUNK_SIZE, config.maxChunkSize || DEFAULT_UPLOAD_CHUNK_SIZE);
+    const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+    const uploadId = await getUploadIdForFile(file);
+    const statusResponse = await fetch(`/api/upload/status?uploadId=${encodeURIComponent(uploadId)}&totalChunks=${totalChunks}`);
+    const statusData = statusResponse.ok ? await statusResponse.json() : { uploadedChunks: [] };
+    const uploadedChunks = new Set<number>((statusData.uploadedChunks || []).map(Number));
 
-    const data = await response.json();
+    let uploadedBytes = Array.from(uploadedChunks).reduce((total, index) => {
+      const start = index * chunkSize;
+      return total + Math.max(0, Math.min(chunkSize, file.size - start));
+    }, 0);
+    const startTime = performance.now();
+    setUploadState({
+      fileName: file.name,
+      progress: file.size ? uploadedBytes / file.size : 1,
+      uploadedBytes,
+      totalBytes: file.size,
+      speedBytesPerSecond: 0,
+      status: 'uploading',
+    });
+
+    const onChunkComplete = (chunkIndex: number, bytes: number) => {
+      if (uploadedChunks.has(chunkIndex)) return;
+      uploadedChunks.add(chunkIndex);
+      uploadedBytes += bytes;
+      const elapsedSeconds = Math.max((performance.now() - startTime) / 1000, 0.1);
+      setUploadState({
+        fileName: file.name,
+        progress: file.size ? uploadedBytes / file.size : 1,
+        uploadedBytes,
+        totalBytes: file.size,
+        speedBytesPerSecond: uploadedBytes / elapsedSeconds,
+        status: 'uploading',
+      });
+    };
+
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(UPLOAD_CONCURRENCY, totalChunks) }, async () => {
+      while (cursor < totalChunks) {
+        const chunkIndex = cursor;
+        cursor += 1;
+        await uploadChunkWithRetry({ file, uploadId, chunkIndex, totalChunks, chunkSize, uploadedChunks, onChunkComplete });
+      }
+    });
+    await Promise.all(workers);
+
+    setUploadState(current => current ? { ...current, status: 'finalizing', progress: 1 } : current);
+    const completeResponse = await fetch('/api/upload/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uploadId,
+        fileId: uploadId,
+        totalChunks,
+        totalSize: file.size,
+        chunkSize,
+        originalName: file.name,
+        originalNameEncoded: encodeURIComponent(file.name),
+        mimeType: file.type || 'application/octet-stream',
+        encrypted: false,
+      }),
+    });
+    if (!completeResponse.ok) throw new Error(`Upload finalize failed: ${completeResponse.status} ${await completeResponse.text().catch(() => '')}`);
+
+    const data = await completeResponse.json();
     const attachment: Attachment = {
       url: data.url,
       originalName: data.originalName,
       size: data.size,
       mimeType: data.mimeType,
+      uploadId,
+      fileId: data.fileId || uploadId,
+      chunkSize,
+      totalChunks,
+      encrypted: false,
+      integrity: {
+        algorithm: 'sha-256',
+        fileHash: data.fileHash || undefined,
+      },
     };
 
     socket.emit('sendMessage', {
@@ -478,9 +761,11 @@ export default function App() {
       }
     } catch (error) {
       console.error('File upload failed', error);
+      setUploadState(current => current ? { ...current, status: 'failed' } : current);
       alert('文件上传失败');
     } finally {
       setUploading(false);
+      setTimeout(() => setUploadState(null), 1500);
     }
   };
 
@@ -516,6 +801,9 @@ export default function App() {
   };
 
   const deleteMessage = (msgId: string) => {
+    if (profile && !profile.isAnonymous) {
+      void airChatRepository.deleteMessage(profile.id, activeChat, msgId).catch(error => console.error('Failed to delete message', error));
+    }
     setChats(prev => {
       const currentRoomChats = prev[activeChat] || [];
       return {
@@ -527,7 +815,11 @@ export default function App() {
 
   const clearHistory = () => {
     if (window.confirm('确认清空当前对话的所有本地历史记录吗？不可恢复。')) {
+      if (profile && !profile.isAnonymous) {
+        void airChatRepository.deleteRoom(profile.id, activeChat).catch(error => console.error('Failed to clear room history', error));
+      }
       setChats(prev => ({ ...prev, [activeChat]: [] }));
+      setRoomHasMore(prev => ({ ...prev, [activeChat]: false }));
     }
   };
 
@@ -542,6 +834,10 @@ export default function App() {
   };
 
   const deleteFriend = (userId: string) => {
+    if (profile && !profile.isAnonymous) {
+      void airChatRepository.markUserDeleted(profile.id, userId).catch(error => console.error('Failed to delete friend', error));
+      void airChatRepository.deleteRoom(profile.id, userId).catch(error => console.error('Failed to delete friend history', error));
+    }
     setDeletedUsers(prev => ({ ...prev, [userId]: true }));
     setKnownUsers(prev => {
       const next = { ...prev };
@@ -559,6 +855,10 @@ export default function App() {
 
   const deleteGroup = (groupId: string) => {
     socket.emit('leaveGroup', { groupId });
+    if (profile && !profile.isAnonymous) {
+      void airChatRepository.markGroupDeleted(profile.id, groupId).catch(error => console.error('Failed to delete group', error));
+      void airChatRepository.deleteRoom(profile.id, groupId).catch(error => console.error('Failed to delete group history', error));
+    }
     setDeletedGroups(prev => ({ ...prev, [groupId]: true }));
     setKnownGroups(prev => {
       const next = { ...prev };
@@ -646,7 +946,43 @@ export default function App() {
     setForwardDraft({ messages: selectedMessages, mode });
   };
 
-  const sendForward = (targetId: string) => {
+  const sendTextToRoom = async (targetId: string, content: string) => {
+    if (!profile) return false;
+    const isPrivateTarget = targetId !== 'global' && !targetId.startsWith('group_');
+    if (!isPrivateTarget) {
+      socket.emit('sendMessage', {
+        senderId: profile.id,
+        receiverId: targetId,
+        type: 'text',
+        content,
+      });
+      return true;
+    }
+
+    const receiver = allUsersMap.get(targetId) || knownUsers[targetId] || serverUsers.find(user => user.id === targetId);
+    if (!e2eeIdentity || !receiver?.publicIdentity) {
+      setSecurityNotice('Forwarding to this private chat requires the recipient encryption key.');
+      return false;
+    }
+
+    const encryption = await encryptPrivateText({
+      plaintext: content,
+      sender: profile,
+      receiver,
+      identity: e2eeIdentity,
+    });
+    socket.emit('sendMessage', {
+      senderId: profile.id,
+      receiverId: targetId,
+      type: 'text',
+      content: '[encrypted]',
+      isEncrypted: true,
+      encryption,
+    });
+    return true;
+  };
+
+  const sendForward = async (targetId: string) => {
     if (!forwardDraft || !profile) return;
 
     if (forwardDraft.mode === 'merged') {
@@ -656,22 +992,23 @@ export default function App() {
         ...forwardDraft.messages.map(msg => describeForwardedMessage(msg, getSenderName(msg))),
       ].join('\n\n---\n\n');
 
-      socket.emit('sendMessage', {
-        senderId: profile.id,
-        receiverId: targetId,
-        type: 'text',
-        content,
-      });
+      const ok = await sendTextToRoom(targetId, content);
+      if (!ok) return;
     } else {
-      forwardDraft.messages.forEach(msg => {
+      for (const msg of forwardDraft.messages) {
         if (msg.type !== 'text' && msg.type !== 'file') return;
-        socket.emit('sendMessage', {
-          senderId: profile.id,
-          receiverId: targetId,
-          type: msg.type,
-          content: msg.content,
-        });
-      });
+        if (msg.type === 'text') {
+          const ok = await sendTextToRoom(targetId, msg.content);
+          if (!ok) return;
+        } else {
+          socket.emit('sendMessage', {
+            senderId: profile.id,
+            receiverId: targetId,
+            type: msg.type,
+            content: msg.content,
+          });
+        }
+      }
     }
 
     setForwardDraft(null);
@@ -701,6 +1038,7 @@ export default function App() {
   // Header Details
   let chatName = '离线 / 未知';
   let membersText = '';
+  let securityText = '公开聊天室未加密';
   if (activeChat === 'global') {
      chatName = '公开聊天室';
      membersText = `${serverUsers.length} 人在线`; // includes self, or maybe displayUsers.length online
@@ -712,6 +1050,13 @@ export default function App() {
      const u = allUsersMap.get(activeChat);
      chatName = u ? u.username : '历史联系人';
      membersText = u?.isOnline ? '在线' : '离线';
+  }
+
+  if (activeChat.startsWith('group_')) {
+    securityText = '群聊未加密';
+  } else if (activeChat !== 'global') {
+    const activePeerForSecurity = allUsersMap.get(activeChat);
+    securityText = e2eeIdentity && activePeerForSecurity?.publicIdentity ? '私聊已加密' : '私聊未加密：缺少密钥';
   }
 
   return (
@@ -901,7 +1246,7 @@ export default function App() {
               </button>
               <div className="overflow-hidden">
                 <h2 className="text-lg font-bold theme-text-main truncate">{chatName}</h2>
-                <p className="text-xs theme-text-muted font-medium">{membersText}</p>
+                <p className="text-xs theme-text-muted font-medium">{membersText} · {securityText}</p>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -919,6 +1264,15 @@ export default function App() {
                </button>
             </div>
           </div>
+
+          {securityNotice && (
+            <div className="px-4 md:px-6 py-2 bg-amber-500/10 border-t border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-medium flex items-center justify-between gap-3">
+              <span>{securityNotice}</span>
+              <button onClick={() => setSecurityNotice(null)} className="p-1 rounded-md hover:bg-amber-500/10 cursor-pointer" title="关闭">
+                <X size={14} />
+              </button>
+            </div>
+          )}
 
           {selectionMode && (
             <div className="px-4 md:px-6 py-2 theme-header flex items-center justify-between gap-3 shrink-0 border-t border-[var(--sidebar-border)]">
@@ -944,6 +1298,16 @@ export default function App() {
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto custom-scrollbar p-4 md:p-6 space-y-6 flex flex-col">
+            {activeMessages.length > 0 && roomHasMore[activeChat] && profile && !profile.isAnonymous && (
+              <button
+                onClick={() => loadRoomMessages(profile.id, activeChat, 'older')}
+                disabled={loadingHistory}
+                className="self-center px-4 py-2 rounded-xl text-xs font-semibold theme-item theme-text-main border border-[var(--input-border)] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {loadingHistory ? 'Loading...' : 'Load earlier messages'}
+              </button>
+            )}
+
             {activeMessages.length === 0 && (
                <div className="flex flex-col items-center justify-center h-full text-center opacity-50 select-none">
                  <div className="w-20 h-20 mb-4 rounded-full bg-[var(--item-hover)] flex items-center justify-center text-[var(--text-muted)]"><Users size={32} /></div>
@@ -1033,6 +1397,25 @@ export default function App() {
 
           {/* Input Area */}
           <footer className="p-3 md:p-6 shrink-0 bg-transparent mb-safe">
+            {uploadState && (
+              <div className="mb-3 theme-panel border border-[var(--panel-border)] rounded-xl p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3 text-xs mb-2">
+                  <span className="theme-text-main font-semibold truncate">{uploadState.fileName}</span>
+                  <span className="theme-text-muted shrink-0">
+                    {Math.round(uploadState.progress * 100)}% · {formatBytes(uploadState.speedBytesPerSecond)}/s · {uploadState.status}
+                  </span>
+                </div>
+                <div className="h-2 rounded-full bg-[var(--item-hover)] overflow-hidden">
+                  <div
+                    className={cn("h-full transition-all", uploadState.status === 'failed' ? "bg-red-500" : "bg-blue-500")}
+                    style={{ width: `${Math.min(100, Math.max(0, uploadState.progress * 100))}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-[11px] theme-text-subtle">
+                  {formatBytes(uploadState.uploadedBytes)} / {formatBytes(uploadState.totalBytes)}
+                </div>
+              </div>
+            )}
             <form 
               onSubmit={sendMessage}
               className="theme-input-wrap rounded-2xl p-2 flex items-center gap-2 shadow-lg"
