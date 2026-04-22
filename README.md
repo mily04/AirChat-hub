@@ -15,6 +15,17 @@ AirChat is a local-network chat and file sharing app for nearby devices. It runs
 - Local network URL discovery with mDNS support
 - Windows executable packaging script
 
+## Experimental Features
+
+The following features are currently experimental. They are included for testing and feedback, but their behavior and data formats may change in future versions.
+
+- IndexedDB-based local storage for profiles, contacts, groups, message history, and attachment metadata. This is intended to avoid localStorage quota limits and reduce full-history rewrites.
+- Paged loading of local message history, so large conversations can load recent messages first and fetch older messages on demand.
+- Chunked file upload with resumable chunk status checks, retry handling, configurable chunk size, and server-side streaming merge.
+- Experimental private-message encryption using browser Web Crypto APIs. Private text messages publish client public keys and send encrypted payloads through the server. This does not yet cover group chats or file attachments, and it should not be treated as a complete audited security system.
+- Basic identity-key binding for connected users, intended to reduce simple user-id spoofing during a session.
+- White theme as the default for first-time users. Existing users keep their locally saved theme preference.
+
 ## Technology Stack
 
 - TypeScript
@@ -77,6 +88,8 @@ THIRD_PARTY_LICENSES.md
 ## Security and Privacy Notes
 
 AirChat is designed for trusted local networks. It does not provide end-to-end encryption, user accounts, or long-term server-side access control. Do not expose it directly to the public internet without adding authentication, transport security, and operational hardening.
+
+Experimental private-message encryption is being developed separately from the baseline security model above. At this stage, group chats and transferred files are not end-to-end encrypted, public keys are not independently verified by users, and uploaded file URLs may still be accessible to anyone who can reach the host and knows the link.
 
 Uploaded files are stored on the host machine in the runtime upload directory. Do not commit uploads, logs, local databases, certificates, private keys, or environment files.
 
