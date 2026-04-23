@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 mily04
- * This file is part of AirChat.
+ * This file is part of Tmesh.
  *
  * Licensed under the GNU Affero General Public License, version 3 or later.
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -10,7 +10,7 @@
 
 import { Attachment, ChatMessage, Group, Profile, User } from './types';
 
-const DB_NAME = 'airchat';
+const DB_NAME = 'tmesh';
 const DB_VERSION = 1;
 export const MESSAGE_PAGE_SIZE = 80;
 
@@ -56,7 +56,7 @@ function transactionDone(tx: IDBTransaction) {
   });
 }
 
-function openAirChatDb() {
+function openTmeshDb() {
   return new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
@@ -98,7 +98,7 @@ function openAirChatDb() {
 }
 
 async function withStore<T>(storeName: StoreName, mode: IDBTransactionMode, run: (store: IDBObjectStore, tx: IDBTransaction) => Promise<T> | T) {
-  const db = await openAirChatDb();
+  const db = await openTmeshDb();
   try {
     const tx = db.transaction(storeName, mode);
     const result = await run(tx.objectStore(storeName), tx);
@@ -110,7 +110,7 @@ async function withStore<T>(storeName: StoreName, mode: IDBTransactionMode, run:
 }
 
 async function withStores<T>(storeNames: StoreName[], mode: IDBTransactionMode, run: (tx: IDBTransaction) => Promise<T> | T) {
-  const db = await openAirChatDb();
+  const db = await openTmeshDb();
   try {
     const tx = db.transaction(storeNames, mode);
     const result = await run(tx);
@@ -208,7 +208,7 @@ async function migrateProfileData(profileId: string) {
   removeLegacyProfileKeys(profileId);
 }
 
-export const airChatRepository = {
+export const tmeshRepository = {
   roomForMessage,
 
   async migrateLegacyLocalStorage() {

@@ -1,16 +1,16 @@
 {
-  "name": "airchat",
+  "name": "tmesh",
   "version": "0.0.0",
   "description": "Local network chat and file sharing for nearby devices.",
   "license": "AGPL-3.0-or-later",
   "author": "mily04 <mily040625@gmail.com>",
-  "homepage": "https://github.com/mily04/AirChat#readme",
+  "homepage": "https://github.com/mily04/AirChat-hub#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mily04/AirChat.git"
+    "url": "git+https://github.com/mily04/AirChat-hub.git"
   },
   "bugs": {
-    "url": "https://github.com/mily04/AirChat/issues"
+    "url": "https://github.com/mily04/AirChat-hub/issues"
   },
   "keywords": [
     "lan",
@@ -22,6 +22,7 @@
     "typescript"
   ],
   "type": "module",
+  "main": "electron/main.cjs",
   "engines": {
     "node": ">=18"
   },
@@ -30,10 +31,58 @@
     "start": "node -e \"process.env.NODE_ENV='production'; import('./dist/server.js')\"",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js",
     "build:exe-server": "esbuild server.ts --bundle --platform=node --format=cjs --packages=bundle --external:vite --outfile=dist/server.cjs",
-    "package:win": "npm run build && npm run build:exe-server && pkg . --targets node18-win-x64 --output dist/AirChat.exe",
+    "package:win": "npm run build && npm run build:exe-server && pkg . --targets node18-win-x64 --output dist/Tmesh.exe",
+    "package:mac": "npm run build && electron-builder --mac dmg",
     "preview": "vite preview",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "lint": "tsc --noEmit"
+  },
+  "build": {
+    "appId": "com.mily04.tmesh",
+    "productName": "Tmesh",
+    "copyright": "Copyright © 2026 mily04",
+    "asar": true,
+    "icon": "build/icon",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.icns",
+      "build/icon.png",
+      "package.json",
+      "LICENSE",
+      "LICENSE-COMMERCIAL.md",
+      "THIRD_PARTY_LICENSES.md"
+    ],
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "directories": {
+      "output": "release"
+    }
   },
   "bin": "dist/server.cjs",
   "pkg": {
@@ -53,6 +102,7 @@
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "multer": "^2.1.1",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "socket.io": "^4.8.3",
@@ -65,7 +115,10 @@
     "@types/express": "^4.17.21",
     "@types/multer": "^2.1.0",
     "@types/node": "^22.14.0",
+    "@types/qrcode": "^1.5.6",
     "autoprefixer": "^10.4.21",
+    "electron": "^41.2.2",
+    "electron-builder": "^26.8.1",
     "esbuild": "^0.28.0",
     "pkg": "^5.8.1",
     "tailwindcss": "^4.1.14",

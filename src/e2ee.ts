@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 mily04
- * This file is part of AirChat.
+ * This file is part of Tmesh.
  *
  * Licensed under the GNU Affero General Public License, version 3 or later.
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -12,7 +12,7 @@ import nacl from 'tweetnacl';
 import { sha256 } from 'js-sha256';
 import { E2EEPayload, E2EEPublicIdentity, Profile, User } from './types';
 
-const DB_NAME = 'airchat-e2ee';
+const DB_NAME = 'tmesh-e2ee';
 const DB_VERSION = 2;
 const STORE_NAME = 'identities';
 const TEXT_ENCODING = 'utf-8';
@@ -151,7 +151,7 @@ function generateStoredIdentity(profileId: string): StoredIdentity {
 
 function joinSigningText(profile: Profile, publicIdentity: E2EEPublicIdentity, signedAt: number) {
   return [
-    'airchat-join-v2',
+    'tmesh-join-v2',
     profile.id,
     profile.username,
     profile.avatar || '',
@@ -247,7 +247,7 @@ export async function encryptPrivateText(params: {
   );
 
   const payload: E2EEPayload = {
-    version: 'airchat-e2ee-v1',
+    version: 'tmesh-e2ee-v1',
     algorithm: 'NACL-BOX-CURVE25519+XSALSA20-POLY1305',
     ciphertext: bytesToBase64(ciphertext),
     iv: bytesToBase64(nonce),

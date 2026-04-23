@@ -5,10 +5,14 @@ node_modules/
 venv/
 .venv/
 __pycache__/
-build/
+/build/*
+!/build/icon.png
+!/build/icon.icns
 dist/
+release/
 .vite/
 .cache/
+.npm-cache/
 uploads/
 coverage/
 .vscode/

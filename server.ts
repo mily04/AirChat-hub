@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 mily04
- * This file is part of AirChat.
+ * This file is part of Tmesh.
  *
  * Licensed under the GNU Affero General Public License, version 3 or later.
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -16,11 +16,13 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
 import nacl from 'tweetnacl';
 import { sha256 } from 'js-sha256';
 import { Bonjour } from 'bonjour-service';
 
-const runtimeDir = typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'dist');
+const runtimeDir = process.env.AIRCHAT_RUNTIME_DIR ||
+  (typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'dist'));
 
 if (!process.env.NODE_ENV && (process as any).pkg) {
   process.env.NODE_ENV = 'production';
@@ -44,7 +46,7 @@ const MAX_FILE_SIZE = Number(process.env.UPLOAD_MAX_FILE_SIZE || 5 * 1024 * 1024
 app.use(express.json({ limit: '1mb' }));
 
 // Setup file uploads setup
-const uploadsDir = path.join(process.cwd(), 'uploads');
+const uploadsDir = path.join(process.env.AIRCHAT_UPLOADS_DIR || process.cwd(), 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
@@ -181,22 +183,69 @@ function getLanIps() {
 const lanIps = getLanIps();
 const localIp = lanIps[0] || '127.0.0.1';
 let currentPort = PORT;
-const mdnsHostname = 'airchat';
+const mdnsServiceName = 'Tmesh';
+
+function getSystemLocalHostname() {
+  if (process.platform === 'darwin') {
+    try {
+      const localHostname = execFileSync('/usr/sbin/scutil', ['--get', 'LocalHostName'], { encoding: 'utf8' }).trim();
+      if (localHostname) return localHostname;
+    } catch {
+      // Fall back to os.hostname() below when macOS has no LocalHostName set.
+    }
+  }
+
+  return os.hostname();
+}
+
+function getMdnsHostname() {
+  const configured = process.env.TMESH_MDNS_HOSTNAME || getSystemLocalHostname();
+  const hostname = configured.replace(/\.local\.?$/i, '');
+  const safeHostname = hostname
+    .normalize('NFKD')
+    .replace(/[^a-zA-Z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  return safeHostname || 'tmesh';
+}
+
+const mdnsHostname = getMdnsHostname();
+
+function urlForHost(host: string, port: number) {
+  return `http://${host}:${port}`;
+}
+
+function getPrimaryLanUrl(port: number) {
+  return urlForHost(localIp, port);
+}
+
+function getMdnsUrl(port: number) {
+  return urlForHost(`${mdnsHostname}.local`, port);
+}
 
 function getAccessUrls(port: number) {
-  const urls = [`http://localhost:${port}`];
-  lanIps.forEach(ip => urls.push(`http://${ip}:${port}`));
-  urls.push(`http://${mdnsHostname}.local:${port}`);
+  const urls = [urlForHost('localhost', port)];
+  lanIps.forEach(ip => urls.push(urlForHost(ip, port)));
+  urls.push(getMdnsUrl(port));
   return urls;
 }
 
 app.get('/api/server-info', (req, res) => {
+  const lanUrl = getPrimaryLanUrl(currentPort);
+  const mdnsUrl = getMdnsUrl(currentPort);
+  const appUrl = process.env.APP_URL;
+
   res.json({
     localIp,
     lanIps,
     port: currentPort,
-    mdnsUrl: `http://${mdnsHostname}.local:${currentPort}`,
-    appUrl: process.env.APP_URL
+    lanUrl,
+    mdnsHostname: `${mdnsHostname}.local`,
+    mdnsUrl,
+    smartUrl: mdnsUrl,
+    shareUrl: appUrl || lanUrl,
+    appUrl,
   });
 });
 
@@ -363,7 +412,7 @@ function joinSigningText(userData: {
   identitySignedAt: number;
 }) {
   return [
-    'airchat-join-v2',
+    'tmesh-join-v2',
     userData.id,
     userData.username,
     userData.avatar || '',
@@ -634,7 +683,7 @@ async function startServer() {
       getAccessUrls(port).forEach((url) => console.log(`  ${url}`));
       try {
         const bonjour = new Bonjour();
-        const service = bonjour.publish({ name: mdnsHostname, type: 'http', port, probe: false });
+        const service = bonjour.publish({ name: mdnsServiceName, type: 'http', port, probe: false });
         service.on('error', (err) => console.error('mdns error:', err));
       } catch (e) {
         console.error('mdns error:', e);

@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 mily04
- * This file is part of AirChat.
+ * This file is part of Tmesh.
  *
  * Licensed under the GNU Affero General Public License, version 3 or later.
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -36,7 +36,7 @@ export interface E2EEPublicIdentity {
 }
 
 export interface E2EEPayload {
-  version: 'airchat-e2ee-v1';
+  version: 'tmesh-e2ee-v1';
   algorithm: 'NACL-BOX-CURVE25519+XSALSA20-POLY1305';
   ciphertext: string;
   iv: string;

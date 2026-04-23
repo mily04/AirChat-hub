@@ -1,12 +1,12 @@
 # Third-Party License Review
 
-This file summarizes a dependency license review for AirChat based on the current `package-lock.json`.
+This file summarizes a dependency license review for Tmesh based on the current `package-lock.json`.
 
 Review date: 2026-04-22
 
 ## Project License
 
-AirChat itself is licensed under GNU Affero General Public License version 3 or later (AGPL-3.0-or-later), with a separate commercial licensing path available from the project maintainer.
+Tmesh itself is licensed under GNU Affero General Public License version 3 or later (AGPL-3.0-or-later), with a separate commercial licensing path available from the project maintainer.
 
 ## Technology Scope
 
@@ -14,7 +14,7 @@ The reviewed dependency set belongs to the TypeScript / React / Vite / Express /
 
 ## Summary
 
-No dependency license was found that is obviously incompatible with distributing AirChat under AGPL-3.0-or-later.
+No dependency license was found that is obviously incompatible with distributing Tmesh under AGPL-3.0-or-later.
 
 The dependency tree contains common permissive licenses such as MIT, ISC, BSD, 0BSD, and Apache-2.0. Apache-2.0 is generally compatible with GPLv3-family licensing. The dependency tree also contains MPL-2.0 packages from `lightningcss`; MPL-2.0 is a file-level weak copyleft license and should be preserved for those third-party files. `caniuse-lite` is licensed under CC-BY-4.0 and should retain attribution notices when redistributed.
 

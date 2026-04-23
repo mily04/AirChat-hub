@@ -1,7 +1,7 @@
 
-# AirChat
+# Tmesh
 
-AirChat is a local-network chat and file sharing app for nearby devices. It runs a small web server on one machine and lets other devices on the same LAN join through a browser.
+Tmesh is a local-network chat and file sharing app for nearby devices. It runs a small web server on one machine and lets other devices on the same LAN join through a browser.
 
 ## Features
 
@@ -41,7 +41,7 @@ The following features are currently experimental. They are included for testing
 - Node.js 18 or newer
 - npm
 - Devices must be on the same local network
-- The host firewall must allow Node.js or the packaged AirChat executable on private networks
+- The host firewall must allow Node.js or the packaged Tmesh executable on private networks
 
 ## Quick Start
 
@@ -50,7 +50,7 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by the server. Other devices on the same LAN can join through the LAN IP URL or the mDNS URL shown by AirChat.
+Open the local URL printed by the server. Other devices on the same LAN can join through the LAN IP URL or the mDNS URL shown by Tmesh.
 
 If another device cannot open the LAN URL, allow Node.js through the operating system firewall for private networks and make sure both devices are connected to the same router or subnet.
 
@@ -62,7 +62,7 @@ Copy `.env.example` to `.env` if you need to expose a public URL in the share di
 APP_URL="https://example.com"
 ```
 
-`APP_URL` is optional. AirChat works on a LAN without it.
+`APP_URL` is optional. Tmesh works on a LAN without it.
 
 ## Scripts
 
@@ -87,7 +87,7 @@ THIRD_PARTY_LICENSES.md
 
 ## Security and Privacy Notes
 
-AirChat is designed for trusted local networks. It does not provide end-to-end encryption, user accounts, or long-term server-side access control. Do not expose it directly to the public internet without adding authentication, transport security, and operational hardening.
+Tmesh is designed for trusted local networks. It does not provide end-to-end encryption, user accounts, or long-term server-side access control. Do not expose it directly to the public internet without adding authentication, transport security, and operational hardening.
 
 Experimental private-message encryption is being developed separately from the baseline security model above. At this stage, group chats and transferred files are not end-to-end encrypted, public keys are not independently verified by users, and uploaded file URLs may still be accessible to anyone who can reach the host and knows the link.
 
@@ -99,11 +99,11 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before
 
 ## License
 
-AirChat is open source under the GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later).
+Tmesh is open source under the GNU Affero General Public License, version 3 or later (AGPL-3.0-or-later).
 
 You may use, modify, and distribute this project under the terms of the AGPL. If you distribute a modified version, or provide a modified version to users over a network as a hosted/SaaS service, you must provide the corresponding source code to those users as required by the AGPL.
 
-If you want to use AirChat in a closed-source product, closed-source internal system, closed-source SDK, or closed-source SaaS/hosted service without complying with the corresponding AGPL obligations, contact the author for a separate commercial license.
+If you want to use Tmesh in a closed-source product, closed-source internal system, closed-source SDK, or closed-source SaaS/hosted service without complying with the corresponding AGPL obligations, contact the author for a separate commercial license.
 
 Commercial licensing contact:
 

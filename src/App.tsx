@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 mily04
- * This file is part of AirChat.
+ * This file is part of Tmesh.
  *
  * Licensed under the GNU Affero General Public License, version 3 or later.
  * SPDX-License-Identifier: AGPL-3.0-or-later
@@ -11,12 +11,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { sha256 } from 'js-sha256';
+import * as QRCode from 'qrcode';
 import { Send, Paperclip, FileText, Image as ImageIcon, Video, User as UserIcon, LogOut, Sun, Moon, Palette, Plus, Users, Check, X, Copy, Trash2, ChevronLeft, Globe, MoreVertical, Share2, Forward, Download, CheckSquare, Square } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Profile, User, ChatMessage, Attachment, Group, GroupInvite } from './types';
-import { airChatRepository, MESSAGE_PAGE_SIZE } from './db';
+import { tmeshRepository, MESSAGE_PAGE_SIZE } from './db';
 import { buildJoinIdentityProof, decryptPrivateText, encryptPrivateText, ensureE2EEIdentity, type LocalE2EEIdentity } from './e2ee';
+import tmeshIcon from './assets/tmesh.png';
 
 // Utility for Tailwind
 function cn(...inputs: ClassValue[]) {
@@ -40,6 +42,18 @@ type UploadState = {
   totalBytes: number;
   speedBytesPerSecond: number;
   status: 'uploading' | 'retrying' | 'finalizing' | 'failed';
+};
+
+type ServerInfo = {
+  localIp: string;
+  lanIps?: string[];
+  port: number;
+  lanUrl?: string;
+  mdnsHostname?: string;
+  mdnsUrl: string;
+  smartUrl?: string;
+  shareUrl?: string;
+  appUrl?: string;
 };
 
 function formatBytes(bytes: number, decimals = 2) {
@@ -235,7 +249,7 @@ export default function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Record<string, true>>({});
   const [forwardDraft, setForwardDraft] = useState<{ messages: ChatMessage[]; mode: 'single' | 'separate' | 'merged' } | null>(null);
-  const [serverInfo, setServerInfo] = useState<{ localIp: string, port: number, mdnsUrl: string, appUrl?: string } | null>(null);
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
 
   const [theme, setTheme] = useState(() => localStorage.getItem('lan-chat-theme') || 'minimal');
   
@@ -257,8 +271,8 @@ export default function App() {
     try {
       const existing = chats[roomId] || [];
       const page = mode === 'older' && existing.length > 0
-        ? await airChatRepository.getMessagesBefore(profileId, roomId, existing[0].timestamp, MESSAGE_PAGE_SIZE)
-        : await airChatRepository.getRecentMessages(profileId, roomId, MESSAGE_PAGE_SIZE);
+        ? await tmeshRepository.getMessagesBefore(profileId, roomId, existing[0].timestamp, MESSAGE_PAGE_SIZE)
+        : await tmeshRepository.getRecentMessages(profileId, roomId, MESSAGE_PAGE_SIZE);
 
       setChats(prev => {
         const current = mode === 'older' ? (prev[roomId] || []) : [];
@@ -280,7 +294,7 @@ export default function App() {
   // Load profiles on mount
   useEffect(() => {
     let cancelled = false;
-    airChatRepository.getProfiles()
+    tmeshRepository.getProfiles()
       .then(savedProfiles => {
         if (!cancelled) setProfiles(savedProfiles);
       })
@@ -302,7 +316,7 @@ export default function App() {
       setChats({});
       setRoomHasMore({});
 
-      airChatRepository.getContacts(profile.id)
+      tmeshRepository.getContacts(profile.id)
         .then(({ users, deletedUsers, groups, deletedGroups }) => {
           if (cancelled || loadingProfileRef.current !== profile.id) return;
           setKnownUsers(users);
@@ -391,7 +405,7 @@ export default function App() {
           updatedUsers.forEach(u => {
             if (u.id !== profile.id && !deletedUsers[u.id]) next[u.id] = u;
           });
-          void airChatRepository.saveUsers(profile.id, Object.values(next));
+          void tmeshRepository.saveUsers(profile.id, Object.values(next));
           return next;
         });
       }
@@ -405,7 +419,7 @@ export default function App() {
           updatedGroups.forEach(g => {
             if (!deletedGroups[g.id]) next[g.id] = g;
           });
-          void airChatRepository.saveGroups(profile.id, Object.values(next));
+          void tmeshRepository.saveGroups(profile.id, Object.values(next));
           return next;
         });
       }
@@ -457,9 +471,9 @@ export default function App() {
   }, [activeChat, profile?.id]);
 
   const addMessageToChat = (msg: ChatMessage) => {
-      const room = airChatRepository.roomForMessage(msg, profile?.id || '');
+      const room = tmeshRepository.roomForMessage(msg, profile?.id || '');
       if (profile && !profile.isAnonymous) {
-        void airChatRepository.addMessage(profile.id, room, msg).catch(error => console.error('Failed to save message', error));
+        void tmeshRepository.addMessage(profile.id, room, msg).catch(error => console.error('Failed to save message', error));
       }
       if ((chats[room] || []).length >= MAX_RENDERED_MESSAGES_PER_ROOM) {
         setRoomHasMore(current => ({ ...current, [room]: true }));
@@ -483,7 +497,7 @@ export default function App() {
     const newProfile: Profile = { id: generateId(), username, avatar, color };
     const newProfiles = [...profiles, newProfile];
     setProfiles(newProfiles);
-    void airChatRepository.saveProfile(newProfile).catch(error => console.error('Failed to save profile', error));
+    void tmeshRepository.saveProfile(newProfile).catch(error => console.error('Failed to save profile', error));
     loginWithProfile(newProfile);
   };
 
@@ -520,7 +534,7 @@ export default function App() {
     if(window.confirm('确认删除此账户及其所有本地聊天记录吗？')) {
       const newProfiles = profiles.filter(p => p.id !== id);
       setProfiles(newProfiles);
-      void airChatRepository.deleteProfile(id).catch(error => console.error('Failed to delete profile data', error));
+      void tmeshRepository.deleteProfile(id).catch(error => console.error('Failed to delete profile data', error));
     }
   };
 
@@ -801,7 +815,7 @@ export default function App() {
 
   const deleteMessage = (msgId: string) => {
     if (profile && !profile.isAnonymous) {
-      void airChatRepository.deleteMessage(profile.id, activeChat, msgId).catch(error => console.error('Failed to delete message', error));
+      void tmeshRepository.deleteMessage(profile.id, activeChat, msgId).catch(error => console.error('Failed to delete message', error));
     }
     setChats(prev => {
       const currentRoomChats = prev[activeChat] || [];
@@ -815,7 +829,7 @@ export default function App() {
   const clearHistory = () => {
     if (window.confirm('确认清空当前对话的所有本地历史记录吗？不可恢复。')) {
       if (profile && !profile.isAnonymous) {
-        void airChatRepository.deleteRoom(profile.id, activeChat).catch(error => console.error('Failed to clear room history', error));
+        void tmeshRepository.deleteRoom(profile.id, activeChat).catch(error => console.error('Failed to clear room history', error));
       }
       setChats(prev => ({ ...prev, [activeChat]: [] }));
       setRoomHasMore(prev => ({ ...prev, [activeChat]: false }));
@@ -834,8 +848,8 @@ export default function App() {
 
   const deleteFriend = (userId: string) => {
     if (profile && !profile.isAnonymous) {
-      void airChatRepository.markUserDeleted(profile.id, userId).catch(error => console.error('Failed to delete friend', error));
-      void airChatRepository.deleteRoom(profile.id, userId).catch(error => console.error('Failed to delete friend history', error));
+      void tmeshRepository.markUserDeleted(profile.id, userId).catch(error => console.error('Failed to delete friend', error));
+      void tmeshRepository.deleteRoom(profile.id, userId).catch(error => console.error('Failed to delete friend history', error));
     }
     setDeletedUsers(prev => ({ ...prev, [userId]: true }));
     setKnownUsers(prev => {
@@ -855,8 +869,8 @@ export default function App() {
   const deleteGroup = (groupId: string) => {
     socket.emit('leaveGroup', { groupId });
     if (profile && !profile.isAnonymous) {
-      void airChatRepository.markGroupDeleted(profile.id, groupId).catch(error => console.error('Failed to delete group', error));
-      void airChatRepository.deleteRoom(profile.id, groupId).catch(error => console.error('Failed to delete group history', error));
+      void tmeshRepository.markGroupDeleted(profile.id, groupId).catch(error => console.error('Failed to delete group', error));
+      void tmeshRepository.deleteRoom(profile.id, groupId).catch(error => console.error('Failed to delete group history', error));
     }
     setDeletedGroups(prev => ({ ...prev, [groupId]: true }));
     setKnownGroups(prev => {
@@ -1068,7 +1082,7 @@ export default function App() {
           mobileView === 'CHAT' ? "hidden md:flex" : "flex"
         )}>
           <div className="p-4 md:p-6 pb-2 flex items-center justify-between shrink-0">
-            <h2 className="text-2xl font-bold tracking-tight theme-text-main">LAN Connect</h2>
+            <h2 className="text-2xl font-bold tracking-tight theme-text-main">TMesh</h2>
             <div className="w-3 h-3 bg-green-500 rounded-full shadow-[0_0_10px_#22c55e]" title="在线"></div>
           </div>
 
@@ -1505,10 +1519,10 @@ function StartScreen({ profiles, onSelect, onNew, onAnonymous, onDelete, current
        </div>
        
        <div className="text-center mb-12">
-          <div className="w-16 h-16 theme-avatar rounded-[1.2rem] mx-auto mb-6 flex items-center justify-center shadow-lg border-none">
-            <Send size={28} className="theme-text-main ml-1" />
+          <div className="w-16 h-16 theme-avatar rounded-[1.2rem] mx-auto mb-6 flex items-center justify-center shadow-lg border-none overflow-hidden">
+            <img src={tmeshIcon} alt="TMesh" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tight mb-2 theme-text-main">LAN Connect</h1>
+          <h1 className="text-3xl font-bold tracking-tight mb-2 theme-text-main">TMesh</h1>
           <p className="theme-text-subtle text-[15px]">选择您的账户以继续</p>
        </div>
 
@@ -1637,7 +1651,7 @@ function SetupScreen({ onLogin, onBack, currentTheme, setTheme }: any) {
           <div>
             <label className="block text-xs font-semibold theme-text-subtle uppercase tracking-widest mb-3 pl-1">用户名</label>
             <input
-              type="text" required maxLength={20} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="输入一个响亮的名字"
+              type="text" required maxLength={20} value={username} onChange={(e) => setUsername(e.target.value)} placeholder="输入用户名"
               className="w-full theme-input rounded-2xl px-5 py-4 text-[17px] outline-none focus:ring-2 focus:border-transparent transition-all font-medium shadow-sm"
               style={{ '--tw-ring-color': color } as React.CSSProperties}
             />
@@ -1654,8 +1668,9 @@ function SetupScreen({ onLogin, onBack, currentTheme, setTheme }: any) {
   );
 }
 
-function ShareModal({ serverInfo, onClose }: { serverInfo: any, onClose: () => void }) {
+function ShareModal({ serverInfo, onClose }: { serverInfo: ServerInfo, onClose: () => void }) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [qrCodeUrl, setQrCodeUrl] = useState('');
 
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -1663,25 +1678,65 @@ function ShareModal({ serverInfo, onClose }: { serverInfo: any, onClose: () => v
     setTimeout(() => setCopied(null), 2000);
   };
 
-  const localLink = `http://${serverInfo.localIp}:${serverInfo.port}`;
+  const localLink = serverInfo.lanUrl || `http://${serverInfo.localIp}:${serverInfo.port}`;
+  const smartLink = serverInfo.smartUrl || serverInfo.mdnsUrl;
+  const qrLink = serverInfo.shareUrl || localLink;
+
+  useEffect(() => {
+    let isMounted = true;
+    QRCode.toDataURL(qrLink, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      width: 220,
+      color: {
+        dark: '#111827',
+        light: '#ffffff',
+      },
+    })
+      .then(url => {
+        if (isMounted) setQrCodeUrl(url);
+      })
+      .catch(err => console.error('Failed to generate QR code', err));
+
+    return () => {
+      isMounted = false;
+    };
+  }, [qrLink]);
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in transition-all">
-      <div className="theme-panel w-full max-w-md p-6 rounded-[2rem] shadow-2xl flex flex-col relative overflow-hidden">
+      <div className="theme-panel w-full max-w-md max-h-[92vh] overflow-y-auto p-6 rounded-[2rem] shadow-2xl flex flex-col relative">
         <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full hover:bg-[var(--item-hover)] theme-text-muted cursor-pointer transition-colors block">
             <X size={20} />
         </button>
         <div className="flex flex-col items-center mb-6 mt-2">
             <div className="w-14 h-14 bg-blue-500 rounded-full flex items-center justify-center text-white mb-4 shadow-lg"><Share2 size={24} /></div>
-            <h3 className="text-xl font-bold theme-text-main text-center">分享局域网服务器</h3>
+            <h3 className="text-xl font-bold theme-text-main text-center">分享 Tmesh 服务器</h3>
             <p className="theme-text-subtle text-sm text-center mt-1 px-4">将以下地址发送给同一 Wi-Fi 下的其他设备，他们即可直接免部署进入您的聊天室。</p>
         </div>
 
         <div className="flex flex-col gap-3 mb-6">
+            <div className="flex flex-col items-center gap-3 rounded-2xl bg-[var(--item-hover)] border border-[var(--input-border)] p-4">
+                <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider">扫码在浏览器打开</span>
+                <div className="w-[220px] h-[220px] rounded-2xl bg-white p-3 shadow-sm border border-[var(--panel-border)] flex items-center justify-center">
+                    {qrCodeUrl ? (
+                      <img src={qrCodeUrl} alt="Tmesh 分享二维码" className="w-full h-full object-contain" />
+                    ) : (
+                      <span className="theme-text-subtle text-sm">正在生成二维码...</span>
+                    )}
+                </div>
+                <div className="w-full flex items-center gap-2 bg-[var(--panel-bg)] border border-[var(--panel-border)] p-1.5 rounded-xl">
+                    <input type="text" readOnly value={qrLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] font-mono theme-text-main px-2" />
+                    <button onClick={() => handleCopy(qrLink, 'qr')} className="p-2 rounded-lg bg-[var(--item-hover)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
+                        {copied === 'qr' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                    </button>
+                </div>
+            </div>
+
             <div className="flex flex-col gap-1">
                 <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">通用 IP 地址 (支持所有平台)</span>
                 <div className="flex items-center gap-2 bg-[var(--item-hover)] border border-[var(--input-border)] p-1.5 rounded-xl">
-                    <input type="text" readOnly value={localLink} className="flex-1 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
+                    <input type="text" readOnly value={localLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
                     <button onClick={() => handleCopy(localLink, 'ip')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
                         {copied === 'ip' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                     </button>
@@ -1691,11 +1746,14 @@ function ShareModal({ serverInfo, onClose }: { serverInfo: any, onClose: () => v
             <div className="flex flex-col gap-1 mt-2">
                 <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">智能域名 (推荐苹果/Win10+设备)</span>
                 <div className="flex items-center gap-2 bg-[var(--item-hover)] border border-[var(--input-border)] p-1.5 rounded-xl">
-                    <input type="text" readOnly value={serverInfo.mdnsUrl} className="flex-1 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
-                    <button onClick={() => handleCopy(serverInfo.mdnsUrl, 'mdns')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
+                    <input type="text" readOnly value={smartLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
+                    <button onClick={() => handleCopy(smartLink, 'mdns')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
                         {copied === 'mdns' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                     </button>
                 </div>
+                {serverInfo.mdnsHostname && (
+                  <span className="theme-text-subtle text-xs pl-1">主机名：{serverInfo.mdnsHostname}</span>
+                )}
             </div>
 
             {serverInfo.appUrl && (
