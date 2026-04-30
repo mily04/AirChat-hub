@@ -1679,15 +1679,14 @@ function ShareModal({ serverInfo, onClose }: { serverInfo: ServerInfo, onClose: 
   };
 
   const localLink = serverInfo.lanUrl || `http://${serverInfo.localIp}:${serverInfo.port}`;
-  const smartLink = serverInfo.smartUrl || serverInfo.mdnsUrl;
-  const qrLink = serverInfo.shareUrl || localLink;
+  const qrLink = localLink;
 
   useEffect(() => {
     let isMounted = true;
     QRCode.toDataURL(qrLink, {
       errorCorrectionLevel: 'M',
       margin: 2,
-      width: 220,
+      width: 180,
       color: {
         dark: '#111827',
         light: '#ffffff',
@@ -1705,68 +1704,34 @@ function ShareModal({ serverInfo, onClose }: { serverInfo: ServerInfo, onClose: 
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in transition-all">
-      <div className="theme-panel w-full max-w-md max-h-[92vh] overflow-y-auto p-6 rounded-[2rem] shadow-2xl flex flex-col relative">
+      <div className="theme-panel w-full max-w-[22rem] max-h-[80vh] overflow-y-auto p-5 rounded-[1.75rem] shadow-2xl flex flex-col relative">
         <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full hover:bg-[var(--item-hover)] theme-text-muted cursor-pointer transition-colors block">
             <X size={20} />
         </button>
-        <div className="flex flex-col items-center mb-6 mt-2">
-            <div className="w-14 h-14 bg-blue-500 rounded-full flex items-center justify-center text-white mb-4 shadow-lg"><Share2 size={24} /></div>
-            <h3 className="text-xl font-bold theme-text-main text-center">分享 Tmesh 服务器</h3>
-            <p className="theme-text-subtle text-sm text-center mt-1 px-4">将以下地址发送给同一 Wi-Fi 下的其他设备，他们即可直接免部署进入您的聊天室。</p>
+        <div className="flex flex-col items-center mb-4 mt-2">
+            <div className="w-12 h-12 bg-blue-500 rounded-full flex items-center justify-center text-white mb-3 shadow-lg"><Share2 size={22} /></div>
+            <h3 className="text-lg font-bold theme-text-main text-center">分享 Tmesh 服务器</h3>
+            <p className="theme-text-subtle text-sm text-center mt-1 px-2">同一 Wi-Fi 下的设备扫码或复制下方地址，即可直接进入聊天室。</p>
         </div>
 
-        <div className="flex flex-col gap-3 mb-6">
+        <div className="mb-5">
             <div className="flex flex-col items-center gap-3 rounded-2xl bg-[var(--item-hover)] border border-[var(--input-border)] p-4">
                 <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider">扫码在浏览器打开</span>
-                <div className="w-[220px] h-[220px] rounded-2xl bg-white p-3 shadow-sm border border-[var(--panel-border)] flex items-center justify-center">
+                <div className="w-[180px] h-[180px] rounded-2xl bg-white p-3 shadow-sm border border-[var(--panel-border)] flex items-center justify-center">
                     {qrCodeUrl ? (
                       <img src={qrCodeUrl} alt="Tmesh 分享二维码" className="w-full h-full object-contain" />
                     ) : (
                       <span className="theme-text-subtle text-sm">正在生成二维码...</span>
                     )}
                 </div>
+                <span className="w-full text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">局域网 IP 地址</span>
                 <div className="w-full flex items-center gap-2 bg-[var(--panel-bg)] border border-[var(--panel-border)] p-1.5 rounded-xl">
-                    <input type="text" readOnly value={qrLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] font-mono theme-text-main px-2" />
+                    <input type="text" readOnly value={localLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[13px] font-mono theme-text-main px-2" />
                     <button onClick={() => handleCopy(qrLink, 'qr')} className="p-2 rounded-lg bg-[var(--item-hover)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
                         {copied === 'qr' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
                     </button>
                 </div>
             </div>
-
-            <div className="flex flex-col gap-1">
-                <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">通用 IP 地址 (支持所有平台)</span>
-                <div className="flex items-center gap-2 bg-[var(--item-hover)] border border-[var(--input-border)] p-1.5 rounded-xl">
-                    <input type="text" readOnly value={localLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
-                    <button onClick={() => handleCopy(localLink, 'ip')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
-                        {copied === 'ip' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
-                    </button>
-                </div>
-            </div>
-
-            <div className="flex flex-col gap-1 mt-2">
-                <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">智能域名 (推荐苹果/Win10+设备)</span>
-                <div className="flex items-center gap-2 bg-[var(--item-hover)] border border-[var(--input-border)] p-1.5 rounded-xl">
-                    <input type="text" readOnly value={smartLink} className="flex-1 min-w-0 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
-                    <button onClick={() => handleCopy(smartLink, 'mdns')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
-                        {copied === 'mdns' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
-                    </button>
-                </div>
-                {serverInfo.mdnsHostname && (
-                  <span className="theme-text-subtle text-xs pl-1">主机名：{serverInfo.mdnsHostname}</span>
-                )}
-            </div>
-
-            {serverInfo.appUrl && (
-              <div className="flex flex-col gap-1 mt-2">
-                  <span className="text-[11px] font-bold theme-text-subtle uppercase tracking-wider pl-1">公网测试地址</span>
-                  <div className="flex items-center gap-2 bg-[var(--item-hover)] border border-[var(--input-border)] p-1.5 rounded-xl">
-                      <input type="text" readOnly value={serverInfo.appUrl} className="flex-1 bg-transparent border-none outline-none text-[14px] font-mono theme-text-main px-2" />
-                      <button onClick={() => handleCopy(serverInfo.appUrl, 'appUrl')} className="p-2 rounded-lg bg-[var(--panel-bg)] shadow-sm theme-text-main hover:bg-blue-50 transition-colors border border-[var(--panel-border)] cursor-pointer">
-                          {copied === 'appUrl' ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
-                      </button>
-                  </div>
-              </div>
-            )}
         </div>
 
         <button onClick={onClose} className="w-full py-3.5 bg-[var(--item-hover)] hover:bg-[var(--panel-border)] theme-text-main font-semibold rounded-xl transition-colors cursor-pointer border border-[var(--input-border)] shadow-sm">
