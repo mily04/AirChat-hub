@@ -156,8 +156,29 @@ function isVirtualInterface(name: string) {
   return /tailscale|zerotier|wireguard|vpn|virtualbox|vmware|hyper-v|vethernet|loopback|bluetooth|docker|wsl/i.test(name);
 }
 
+function getDefaultRouteInterface() {
+  try {
+    if (process.platform === 'darwin') {
+      const output = execFileSync('/usr/sbin/route', ['get', 'default'], { encoding: 'utf8' });
+      const match = output.match(/^\s*interface:\s+([^\s]+)\s*$/m);
+      return match?.[1] || null;
+    }
+
+    if (process.platform === 'linux') {
+      const output = execFileSync('sh', ['-lc', 'ip route show default'], { encoding: 'utf8' });
+      const match = output.match(/\bdev\s+([^\s]+)/);
+      return match?.[1] || null;
+    }
+  } catch {
+    // Fall back to interface scoring when the route command is unavailable.
+  }
+
+  return null;
+}
+
 function getLanIps() {
   const interfaces = os.networkInterfaces();
+  const defaultRouteInterface = getDefaultRouteInterface();
   const candidates: { name: string; address: string; score: number }[] = [];
 
   for (const name of Object.keys(interfaces)) {
@@ -169,6 +190,7 @@ function getLanIps() {
 
       let score = 0;
       if (/wi-?fi|wlan|ethernet|以太网|无线/i.test(name)) score += 50;
+      if (defaultRouteInterface && name === defaultRouteInterface) score += 40;
       score += 30;
       if (iface.address.startsWith('192.168.')) score += 10;
       candidates.push({ name, address: iface.address, score });
@@ -224,6 +246,27 @@ function getMdnsUrl(port: number) {
   return urlForHost(`${mdnsHostname}.local`, port);
 }
 
+function parseHostnameFromHostHeader(hostHeader?: string | string[]) {
+  const rawValue = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (!rawValue) return null;
+  const trimmed = rawValue.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.startsWith('[')) {
+    const endIndex = trimmed.indexOf(']');
+    return endIndex > 1 ? trimmed.slice(1, endIndex) : null;
+  }
+
+  const [hostname] = trimmed.split(':');
+  return hostname || null;
+}
+
+function getRequestedLanIp(req: express.Request) {
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const requestHost = parseHostnameFromHostHeader(forwardedHost || req.headers.host);
+  return requestHost && isPrivateLanAddress(requestHost) ? requestHost : null;
+}
+
 function getAccessUrls(port: number) {
   const urls = [urlForHost('localhost', port)];
   lanIps.forEach(ip => urls.push(urlForHost(ip, port)));
@@ -232,12 +275,13 @@ function getAccessUrls(port: number) {
 }
 
 app.get('/api/server-info', (req, res) => {
-  const lanUrl = getPrimaryLanUrl(currentPort);
+  const preferredLanIp = getRequestedLanIp(req) || localIp;
+  const lanUrl = urlForHost(preferredLanIp, currentPort);
   const mdnsUrl = getMdnsUrl(currentPort);
   const appUrl = process.env.APP_URL;
 
   res.json({
-    localIp,
+    localIp: preferredLanIp,
     lanIps,
     port: currentPort,
     lanUrl,

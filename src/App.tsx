@@ -56,6 +56,50 @@ type ServerInfo = {
   appUrl?: string;
 };
 
+type ForwardedCollectionItem = {
+  id: string;
+  senderName: string;
+  type: 'text' | 'file';
+  content: string;
+  timestamp: number;
+};
+
+type ForwardedCollection = {
+  kind: 'tmesh-forwarded-collection';
+  version: 1;
+  title: string;
+  createdAt: number;
+  items: ForwardedCollectionItem[];
+};
+
+function isForwardedCollection(value: unknown): value is ForwardedCollection {
+  const collection = value as ForwardedCollection;
+  return collection?.kind === 'tmesh-forwarded-collection'
+    && collection.version === 1
+    && Array.isArray(collection.items)
+    && collection.items.every(item => item && (item.type === 'text' || item.type === 'file') && typeof item.content === 'string');
+}
+
+function parseForwardedCollection(content: string): ForwardedCollection | null {
+  try {
+    const parsed = JSON.parse(content);
+    return isForwardedCollection(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function forwardedItemToMessage(item: ForwardedCollectionItem): ChatMessage {
+  return {
+    id: item.id,
+    senderId: 'forwarded',
+    receiverId: 'forwarded',
+    type: item.type,
+    content: item.content,
+    timestamp: item.timestamp,
+  };
+}
+
 function formatBytes(bytes: number, decimals = 2) {
   if (!+bytes) return '0 Bytes';
   const k = 1024;
@@ -84,6 +128,14 @@ function describeForwardedMessage(msg: ChatMessage, senderName?: string) {
     return `${prefix}\n[文件] ${file.originalName} (${formatBytes(file.size)})\n${file.url}`;
   }
   return `${prefix}\n[系统消息] ${msg.content}`;
+}
+
+function describeForwardedCollection(collection: ForwardedCollection) {
+  return [
+    collection.title,
+    '',
+    ...collection.items.map(item => describeForwardedMessage(forwardedItemToMessage(item), item.senderName)),
+  ].join('\n\n---\n\n');
 }
 
 const PALETTE_COLORS = [
@@ -249,6 +301,7 @@ export default function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<Record<string, true>>({});
   const [forwardDraft, setForwardDraft] = useState<{ messages: ChatMessage[]; mode: 'single' | 'separate' | 'merged' } | null>(null);
+  const [openForwardedCollection, setOpenForwardedCollection] = useState<ForwardedCollection | null>(null);
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
 
   const [theme, setTheme] = useState(() => localStorage.getItem('lan-chat-theme') || 'minimal');
@@ -468,6 +521,7 @@ export default function App() {
     setSelectionMode(false);
     setSelectedMessageIds({});
     setForwardDraft(null);
+    setOpenForwardedCollection(null);
   }, [activeChat, profile?.id]);
 
   const addMessageToChat = (msg: ChatMessage) => {
@@ -930,6 +984,24 @@ export default function App() {
     return allUsersMap.get(msg.senderId)?.username || '未知用户';
   };
 
+  const buildForwardedCollection = (messages: ChatMessage[]): ForwardedCollection => ({
+    kind: 'tmesh-forwarded-collection',
+    version: 1,
+    title: `合并转发 ${messages.length} 条消息`,
+    createdAt: Date.now(),
+    items: messages
+      .flatMap((msg): ForwardedCollectionItem[] => {
+        if (msg.type !== 'text' && msg.type !== 'file') return [];
+        return [{
+          id: msg.id,
+          senderName: getSenderName(msg),
+          type: msg.type,
+          content: msg.content,
+          timestamp: msg.timestamp,
+        }];
+      }),
+  });
+
   const toggleMessageSelection = (msgId: string) => {
     setSelectedMessageIds(prev => {
       const next = { ...prev };
@@ -999,11 +1071,7 @@ export default function App() {
     if (!forwardDraft || !profile) return;
 
     if (forwardDraft.mode === 'merged') {
-      const content = [
-        `合并转发 ${forwardDraft.messages.length} 条消息`,
-        '',
-        ...forwardDraft.messages.map(msg => describeForwardedMessage(msg, getSenderName(msg))),
-      ].join('\n\n---\n\n');
+      const content = JSON.stringify(buildForwardedCollection(forwardDraft.messages));
 
       const ok = await sendTextToRoom(targetId, content);
       if (!ok) return;
@@ -1333,6 +1401,7 @@ export default function App() {
               const isMine = msg.senderId === profile.id;
               const sender = allUsersMap.get(msg.senderId) || (isMine ? profile : null);
               const isSelected = !!selectedMessageIds[msg.id];
+              const forwardedCollection = msg.type === 'text' ? parseForwardedCollection(msg.content) : null;
 
               if (msg.type === 'system') {
                 return (
@@ -1365,19 +1434,24 @@ export default function App() {
                     </div>
                   )}
                   
-                  <div className={cn("flex flex-col max-w-[92%] relative", msg.type === 'file' ? "md:max-w-[88%]" : "md:max-w-[70%]", isMine ? "items-end" : "items-start")}>
+                  <div className={cn(
+                    "flex flex-col relative min-w-0",
+                    msg.type === 'file' ? "chat-file-message-width" : "chat-text-message-width",
+                    isMine ? "items-end" : "items-start"
+                  )}>
                     
-                    {/* Floating Action Menu */}
-                    <div className={cn(
-                      "hidden group-hover:flex items-center gap-1 absolute top-1/2 -translate-y-1/2 p-1 rounded-xl bg-[var(--header-bg)] border border-[var(--panel-border)] shadow-md backdrop-blur-md z-10",
-                      isMine ? "right-full mr-3" : "left-full ml-3"
-                    )}>
-                       {msg.type === 'text' && (
-                         <button onClick={() => copyText(msg.content)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="复制文本"><Copy size={16}/></button>
-                       )}
-                       <button onClick={() => openSingleForward(msg)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="转发"><Forward size={16}/></button>
-                       <button onClick={() => deleteMessage(msg.id)} className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="删除消息"><Trash2 size={16}/></button>
-                    </div>
+                    {!selectionMode && (
+                      <div className={cn(
+                        "hidden group-hover:flex items-center gap-1 absolute top-1/2 -translate-y-1/2 p-1 rounded-xl bg-[var(--header-bg)] border border-[var(--panel-border)] shadow-md backdrop-blur-md z-10",
+                        isMine ? "right-full mr-3" : "left-full ml-3"
+                      )}>
+                         {msg.type === 'text' && (
+                           <button onClick={() => copyText(forwardedCollection ? describeForwardedCollection(forwardedCollection) : msg.content)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="复制文本"><Copy size={16}/></button>
+                         )}
+                         <button onClick={() => openSingleForward(msg)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="转发"><Forward size={16}/></button>
+                         <button onClick={() => deleteMessage(msg.id)} className="p-1.5 hover:bg-red-500/10 hover:text-red-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="删除消息"><Trash2 size={16}/></button>
+                      </div>
+                    )}
 
                     {!isMine && (activeChat === 'global' || activeChat.startsWith('group_')) && (
                       <p className="theme-text-subtle text-[10px] mb-1.5 ml-1">{sender?.username || '未知'} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
@@ -1386,15 +1460,24 @@ export default function App() {
                       <p className="theme-text-subtle text-[10px] mb-1.5 mr-1 text-right">我 • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                     )}
                     
-                    <div 
+                    <div
                       className={cn(
-                        "text-[15px] p-3 md:p-4 leading-relaxed",
+                        "text-[15px] p-3 md:p-4 leading-relaxed max-w-full overflow-hidden",
+                        msg.type === 'file' && "w-full",
                         isMine ? "theme-bubble-sent shadow-md" : "theme-bubble-recv"
                       )}
                       style={isMine ? { backgroundColor: profile.color, color: '#fff' } : {}}
                     >
                       {msg.type === 'text' && (
-                        <p className="whitespace-pre-wrap select-text break-words">{msg.content}</p>
+                        forwardedCollection ? (
+                          <ForwardedCollectionCard
+                            collection={forwardedCollection}
+                            isMine={isMine}
+                            onOpen={() => setOpenForwardedCollection(forwardedCollection)}
+                          />
+                        ) : (
+                          <p className="whitespace-pre-wrap select-text break-words">{msg.content}</p>
+                        )
                       )}
                       
                       {msg.type === 'file' && (
@@ -1500,6 +1583,18 @@ export default function App() {
             targets={forwardTargets}
             onForward={sendForward}
             onClose={() => setForwardDraft(null)}
+          />
+        )}
+
+        {openForwardedCollection && (
+          <ForwardedCollectionModal
+            collection={openForwardedCollection}
+            onClose={() => setOpenForwardedCollection(null)}
+            onCopy={copyText}
+            onForward={(item) => {
+              setOpenForwardedCollection(null);
+              setForwardDraft({ messages: [forwardedItemToMessage(item)], mode: 'single' });
+            }}
           />
         )}
       </div>
@@ -1861,6 +1956,127 @@ function ForwardModal({
   );
 }
 
+function forwardedItemSummary(item: ForwardedCollectionItem) {
+  if (item.type === 'text') return item.content.replace(/\s+/g, ' ').trim() || '[空消息]';
+
+  const file = parseAttachment(item.content);
+  if (!file) return '[文件]';
+  if (file.mimeType.startsWith('image/')) return `[图片] ${file.originalName}`;
+  if (file.mimeType.startsWith('video/')) return `[视频] ${file.originalName}`;
+  return `[文件] ${file.originalName}`;
+}
+
+function ForwardedCollectionCard({
+  collection,
+  isMine,
+  onOpen,
+}: {
+  collection: ForwardedCollection;
+  isMine: boolean;
+  onOpen: () => void;
+}) {
+  const previewItems = collection.items.slice(0, 3);
+
+  return (
+    <button
+      onClick={onOpen}
+      className={cn(
+        "w-full text-left rounded-2xl p-1 transition-transform active:scale-[0.99] cursor-pointer",
+        isMine ? "text-white" : "theme-text-main"
+      )}
+      title="查看合并转发"
+    >
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <div className="text-[17px] font-semibold truncate">{collection.title}</div>
+          <div className={cn("text-xs mt-0.5", isMine ? "text-white/75" : "theme-text-subtle")}>消息合集</div>
+        </div>
+        <div className={cn(
+          "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border",
+          isMine ? "bg-white/15 border-white/20" : "bg-[var(--item-hover)] border-[var(--input-border)]"
+        )}>
+          <Forward size={17} />
+        </div>
+      </div>
+      <div className={cn(
+        "space-y-2 border-t pt-3",
+        isMine ? "border-white/20 text-white/85" : "border-[var(--panel-border)] theme-text-subtle"
+      )}>
+        {previewItems.map(item => (
+          <div key={item.id} className="text-sm truncate">
+            <span className="font-medium">{item.senderName}</span>
+            <span className="opacity-70">: </span>
+            <span>{forwardedItemSummary(item)}</span>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+function ForwardedCollectionModal({
+  collection,
+  onClose,
+  onCopy,
+  onForward,
+}: {
+  collection: ForwardedCollection;
+  onClose: () => void;
+  onCopy: (text: string) => void;
+  onForward: (item: ForwardedCollectionItem) => void;
+}) {
+  const copyItem = (item: ForwardedCollectionItem) => {
+    onCopy(describeForwardedMessage(forwardedItemToMessage(item), item.senderName));
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm animate-in fade-in">
+      <div className="theme-panel forwarded-collection-dialog w-full max-w-2xl max-h-[86vh] rounded-[2rem] shadow-2xl flex flex-col overflow-hidden">
+        <div className="theme-header px-5 py-4 flex items-center justify-between gap-3 shrink-0">
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold theme-text-main truncate">{collection.title}</h3>
+            <p className="theme-text-subtle text-xs mt-0.5">{collection.items.length} 条消息 · {new Date(collection.createdAt).toLocaleString()}</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-full hover:bg-[var(--item-hover)] theme-text-muted cursor-pointer transition-colors shrink-0" title="关闭">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scrollbar theme-chat-bg p-4 md:p-6 space-y-5">
+          {collection.items.map(item => (
+            <div key={item.id} className="flex w-full gap-3 items-end group">
+              <div className="shrink-0 hidden md:flex w-8 h-8 rounded-full theme-avatar border border-[var(--input-border)] text-[11px] items-center justify-center theme-text-muted font-bold uppercase">
+                {item.senderName.charAt(0)}
+              </div>
+              <div className="flex flex-col chat-forwarded-detail-width min-w-0 items-start relative">
+                <p className="theme-text-subtle text-[10px] mb-1.5 ml-1">
+                  {item.senderName} · {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </p>
+
+                <div className="flex items-center gap-1 mb-2 md:mb-0 md:absolute md:top-7 md:left-full md:ml-3 p-1 rounded-xl bg-[var(--header-bg)] border border-[var(--panel-border)] shadow-md backdrop-blur-md z-10">
+                  <button onClick={() => copyItem(item)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="复制"><Copy size={16}/></button>
+                  <button onClick={() => onForward(item)} className="p-1.5 hover:bg-blue-500/10 hover:text-blue-500 rounded-lg theme-text-subtle transition-colors cursor-pointer" title="转发"><Forward size={16}/></button>
+                </div>
+
+                <div className={cn(
+                  "text-[15px] p-3 md:p-4 leading-relaxed max-w-full overflow-hidden theme-bubble-recv",
+                  item.type === 'file' && "w-full"
+                )}>
+                  {item.type === 'text' ? (
+                    <p className="whitespace-pre-wrap select-text break-words">{item.content}</p>
+                  ) : (
+                    <FileAttachment preview={item.content} isMine={false} />
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FileAttachment({ preview, isMine, color }: { preview: string, isMine: boolean, color?: string }) {
   try {
     const file: Attachment = JSON.parse(preview);
@@ -1868,19 +2084,19 @@ function FileAttachment({ preview, isMine, color }: { preview: string, isMine: b
     const isVideo = file.mimeType.startsWith('video/');
 
     return (
-      <div className="flex flex-col gap-2 rounded-xl overflow-hidden max-w-full mt-1">
+      <div className="flex flex-col gap-2 rounded-xl overflow-hidden w-full max-w-full mt-1">
         {(isImage || isVideo) && (
           <a
             href={file.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="block transition-opacity hover:opacity-90"
+            className="flex w-full max-w-full justify-center overflow-hidden transition-opacity hover:opacity-90"
           >
             {isImage && (
-              <img src={file.url} alt={file.originalName} className="block w-auto h-auto max-w-[82vw] md:max-w-[720px] max-h-[70vh] object-contain rounded-xl bg-black/5" />
+              <img src={file.url} alt={file.originalName} className="block w-auto h-auto max-w-full max-h-[min(56vh,420px)] object-contain rounded-xl bg-black/5" />
             )}
             {isVideo && (
-              <video src={file.url} controls preload="metadata" className="block w-auto h-auto max-w-[82vw] md:max-w-[720px] max-h-[70vh] object-contain rounded-xl bg-black/10" />
+              <video src={file.url} controls preload="metadata" className="block w-auto h-auto max-w-full max-h-[min(56vh,420px)] object-contain rounded-xl bg-black/10" />
             )}
           </a>
         )}
@@ -1897,7 +2113,7 @@ function FileAttachment({ preview, isMine, color }: { preview: string, isMine: b
           )}>
             {isImage ? <ImageIcon size={20} /> : isVideo ? <Video size={20} /> : <FileText size={20} />}
           </div>
-          <div className="flex-1 flex flex-col min-w-0 max-w-[200px]">
+          <div className="flex-1 flex flex-col min-w-0">
              <span className="text-sm font-medium truncate">{file.originalName}</span>
              <span className={cn("text-[10px] truncate", isMine ? "text-[rgba(255,255,255,0.8)]" : "theme-text-muted")}>{formatBytes(file.size)}</span>
           </div>
